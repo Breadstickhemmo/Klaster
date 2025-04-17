@@ -69,6 +69,27 @@ const handleResponse = async (response: Response) => {
     return data;
 };
 
+const triggerDownload = async (response: Response, defaultFilename: string) => {
+    const header = response.headers.get('Content-Disposition');
+    let filename = defaultFilename;
+    if (header) {
+        const parts = header.split(';');
+        const filenamePart = parts.find(part => part.trim().startsWith('filename='));
+        if (filenamePart) {
+            filename = filenamePart.split('=')[1].trim().replace(/"/g, '');
+        }
+    }
+    const blob = await response.blob();
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    window.URL.revokeObjectURL(url);
+    a.remove();
+};
+
 export const startClustering = async (fetchWithAuth: FetchWithAuth, data: StartClusteringPayload): Promise<{ session_id: string }> => {
     const formData = new FormData();
     formData.append('embeddingFile', data.embeddingFile);
@@ -103,4 +124,32 @@ export const renameCluster = async (fetchWithAuth: FetchWithAuth, sessionId: str
         body: JSON.stringify({ action: 'RENAME', cluster_id: clusterId, new_name: newName })
     });
     return handleResponse(response);
+};
+
+export const exportAssignmentsCsv = async (fetchWithAuth: FetchWithAuth, sessionId: string): Promise<void> => {
+    const response = await fetchWithAuth(`/api/clustering/export/${sessionId}/assignments.csv`);
+    // We don't parse the body on success, just trigger download
+    if (!response.ok) {
+         const errorData = await response.json().catch(() => ({ error: `HTTP error ${response.status}`}));
+         throw new Error(errorData.error || `Failed to export assignments CSV: ${response.status}`);
+    }
+    await triggerDownload(response, `session_${sessionId}_assignments.csv`);
+};
+
+export const exportClusterSummaryJson = async (fetchWithAuth: FetchWithAuth, sessionId: string): Promise<void> => {
+    const response = await fetchWithAuth(`/api/clustering/export/${sessionId}/cluster_summary.json`);
+     if (!response.ok) {
+         const errorData = await response.json().catch(() => ({ error: `HTTP error ${response.status}`}));
+         throw new Error(errorData.error || `Failed to export cluster summary JSON: ${response.status}`);
+    }
+    await triggerDownload(response, `session_${sessionId}_cluster_summary.json`);
+};
+
+export const exportSessionSummaryJson = async (fetchWithAuth: FetchWithAuth, sessionId: string): Promise<void> => {
+    const response = await fetchWithAuth(`/api/clustering/export/${sessionId}/session_summary.json`);
+     if (!response.ok) {
+         const errorData = await response.json().catch(() => ({ error: `HTTP error ${response.status}`}));
+         throw new Error(errorData.error || `Failed to export session summary JSON: ${response.status}`);
+    }
+    await triggerDownload(response, `session_${sessionId}_session_summary.json`);
 };

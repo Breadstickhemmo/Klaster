@@ -7,11 +7,11 @@ class Config:
     CORS_ORIGINS = os.getenv('CORS_ORIGINS', "http://localhost:3000").split(',')
     DEBUG = os.getenv('DEBUG', 'False').lower() == 'true'
 
-    SQLALCHEMY_DATABASE_URI = os.getenv('DATABASE_URL', 'sqlite:///app.db')
+    SQLALCHEMY_DATABASE_URI = os.getenv('DATABASE_URL')
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 
-    JWT_SECRET_KEY = os.getenv('JWT_SECRET_KEY', 'your-strong-jwt-secret-key')
-    SECRET_KEY = os.getenv('FLASK_SECRET_KEY', 'your-strong-flask-secret-key')
+    JWT_SECRET_KEY = os.getenv('JWT_SECRET_KEY')
+    SECRET_KEY = os.getenv('FLASK_SECRET_KEY')
 
     UPLOAD_FOLDER = os.path.join(os.path.abspath(os.path.dirname(__file__)), 'uploads')
     CONTACT_SHEET_FOLDER = os.path.join(os.path.abspath(os.path.dirname(__file__)), 'contact_sheets')

@@ -6,6 +6,7 @@ import SessionDetailsDisplay from './SessionDetailsDisplay';
 import ChartsDisplay from './ChartsDisplay';
 import ContactSheetsGrid from './ContactSheetsGrid';
 import ConfirmationModal from './ConfirmationModal';
+import ExportControls from './ExportControls';
 import {
     startClustering,
     getClusteringSessions,
@@ -262,6 +263,7 @@ const ClusteringDashboard: React.FC<ClusteringDashboardProps> = ({ fetchWithAuth
         await renameCluster(fetchWithAuth, currentSessionId, clusterId, newName);
         await fetchSessionResults(currentSessionId);
         success = true;
+        toast.success(`Кластер '${oldDisplayName}' успешно переименован в '${newName || `Кластер ${clusterId}`}'`);
 
     } catch (err: any) {
         console.error(`Error renaming cluster ${clusterId}:`, err);
@@ -299,7 +301,6 @@ const ClusteringDashboard: React.FC<ClusteringDashboardProps> = ({ fetchWithAuth
       {currentSessionId && isCurrentSessionLoading && (
         <div className="card status-card"> <p>Загрузка результатов для сессии {currentSessionId.substring(0,8)}...</p> </div>
       )}
-
       {currentSessionId && !isCurrentSessionLoading && !currentSessionDetails && error && (
            <div className="card status-card error-message"><p>Ошибка загрузки результатов: {error}</p></div>
        )}
@@ -308,13 +309,19 @@ const ClusteringDashboard: React.FC<ClusteringDashboardProps> = ({ fetchWithAuth
           <>
               <SessionDetailsDisplay details={currentSessionDetails} />
 
+              <ExportControls
+                    sessionId={currentSessionId}
+                    fetchWithAuth={fetchWithAuth}
+                    disabled={isProcessing}
+                    sessionStatus={currentSessionDetails.status}
+              />
+
               {(currentSessionDetails.status === 'SUCCESS' || currentSessionDetails.status === 'RECLUSTERED' || currentSessionDetails.status === 'PROCESSING') && (
                   <ChartsDisplay
                       details={currentSessionDetails}
                       sessionId={currentSessionId}
                   />
               )}
-
                {(currentSessionDetails.status === 'SUCCESS' || currentSessionDetails.status === 'RECLUSTERED') && (
                   <ContactSheetsGrid
                     clusters={currentSessionDetails.clusters || []}
@@ -326,8 +333,7 @@ const ClusteringDashboard: React.FC<ClusteringDashboardProps> = ({ fetchWithAuth
                     status={currentSessionDetails.status}
                   />
               )}
-
-              {currentSessionDetails.status !== 'SUCCESS' && currentSessionDetails.status !== 'RECLUSTERED' && currentSessionDetails.status !== 'PROCESSING' && (
+               {currentSessionDetails.status !== 'SUCCESS' && currentSessionDetails.status !== 'RECLUSTERED' && currentSessionDetails.status !== 'PROCESSING' && (
                  <div className="card status-card">
                      <p>Статус сессии {currentSessionId.substring(0,8)}...: <strong>{currentSessionDetails.status}</strong>.</p>
                      {currentSessionDetails.message && <p>{currentSessionDetails.message}</p>}
@@ -344,8 +350,8 @@ const ClusteringDashboard: React.FC<ClusteringDashboardProps> = ({ fetchWithAuth
           </>
        )}
 
-        {!currentSessionId && !isProcessing && sessions.length > 0 && ( <div className="card status-card"> <p>Выберите сессию из списка выше для просмотра результатов или запустите новую кластеризацию.</p> </div> )}
-        {!currentSessionId && !isProcessing && sessions.length === 0 && !isFetchingSessions && !error && ( <div className="card status-card"> <p>Нет доступных сессий. Запустите новую кластеризацию, используя форму выше.</p> </div> )}
+       {!currentSessionId && !isProcessing && sessions.length > 0 && ( <div className="card status-card"> <p>Выберите сессию из списка выше для просмотра результатов или запустите новую кластеризацию.</p> </div> )}
+       {!currentSessionId && !isProcessing && sessions.length === 0 && !isFetchingSessions && !error && ( <div className="card status-card"> <p>Нет доступных сессий. Запустите новую кластеризацию, используя форму выше.</p> </div> )}
 
         <ConfirmationModal
             isOpen={isConfirmModalOpen}
