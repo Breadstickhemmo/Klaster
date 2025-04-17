@@ -16,7 +16,7 @@ class Config:
     UPLOAD_FOLDER = os.path.join(os.path.abspath(os.path.dirname(__file__)), 'uploads')
     CONTACT_SHEET_FOLDER = os.path.join(os.path.abspath(os.path.dirname(__file__)), 'contact_sheets')
     SCATTER_DATA_FOLDER = os.path.join(os.path.abspath(os.path.dirname(__file__)), 'scatter_plots_data')
-    
+
     os.makedirs(UPLOAD_FOLDER, exist_ok=True)
     os.makedirs(CONTACT_SHEET_FOLDER, exist_ok=True)
     os.makedirs(SCATTER_DATA_FOLDER, exist_ok=True)

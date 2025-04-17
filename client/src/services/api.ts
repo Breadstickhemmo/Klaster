@@ -4,6 +4,7 @@ export interface StartClusteringPayload {
     algorithm: 'kmeans' | 'dbscan';
     params: { [key: string]: number };
     embeddingFile: File;
+    imageArchive?: File | null;
 }
 
 export interface ClusterResult {
@@ -25,7 +26,7 @@ export interface SessionResultResponse {
     num_clusters: number | null;
     processing_time_sec: number | null;
     clusters: ClusterResult[];
-    scatter_data?: ScatterPoint[] | { error: string } | null;
+    scatter_data?: ScatterPoint[] | { error: string } | { message: string } | null;
     scatter_pca_time_sec?: number | null;
     message?: string;
     error?: string;
@@ -73,6 +74,9 @@ export const startClustering = async (fetchWithAuth: FetchWithAuth, data: StartC
     formData.append('embeddingFile', data.embeddingFile);
     formData.append('algorithm', data.algorithm);
     formData.append('params', JSON.stringify(data.params));
+    if (data.imageArchive) {
+        formData.append('imageArchive', data.imageArchive);
+    }
     const response = await fetchWithAuth('/api/clustering/start', { method: 'POST', body: formData });
     return handleResponse(response);
 };

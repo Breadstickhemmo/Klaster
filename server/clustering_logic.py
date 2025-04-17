@@ -5,10 +5,18 @@ import numpy as np
 import pandas as pd
 import json
 import uuid
+import zipfile
+import io
 from flask import current_app
 from sklearn.cluster import KMeans, DBSCAN
 from sklearn.decomposition import PCA
 from sklearn.metrics import silhouette_score, euclidean_distances
+from PIL import Image, ImageDraw, ImageFont, UnidentifiedImageError
+from models import db, ClusteringSession, ClusterMetadata, ManualAdjustmentLog
+from sqlalchemy.orm.attributes import flag_modified
+from sqlalchemy.exc import SQLAlchemyError
+import config
+
 try:
     import faiss
     FAISS_AVAILABLE = True
@@ -16,31 +24,44 @@ except ImportError:
     FAISS_AVAILABLE = False
     logging.warning("Faiss не найден. Поиск ближайших соседей будет медленным.")
 
-from PIL import Image, ImageDraw, ImageFont
-from models import db, ClusteringSession, ClusterMetadata, ManualAdjustmentLog
-from sqlalchemy.orm.attributes import flag_modified
-from sqlalchemy.exc import SQLAlchemyError
-import config
-
 logger = logging.getLogger(__name__)
 
 def load_embeddings(file_path):
     try:
         df = pd.read_parquet(file_path)
+        logger.info(f"Parquet columns: {df.columns.tolist()}")
+        logger.info(f"Parquet index type: {type(df.index)}")
+        logger.info(f"Parquet index name: {df.index.name}")
+        logger.info(f"Parquet index first 5: {df.index[:5].tolist()}")
+
         if 'embedding' not in df.columns:
             embedding_cols = df.select_dtypes(include=np.number).columns
             if len(embedding_cols) > 1:
-                 embeddings = df[embedding_cols].values.astype(np.float32)
+                embeddings = df[embedding_cols].values.astype(np.float32)
+                logger.info(f"Using {len(embedding_cols)} numeric columns as embeddings.")
             else:
-                 raise ValueError("Столбец 'embedding' или числовые столбцы не найдены в Parquet файле")
+                raise ValueError("Столбец 'embedding' или несколько числовых столбцов не найдены в Parquet файле")
         else:
-             embeddings = np.array(df['embedding'].tolist(), dtype=np.float32)
+            embeddings = np.array(df['embedding'].tolist(), dtype=np.float32)
+            logger.info("Using 'embedding' column.")
 
-        image_ids = df['id'].astype(str).tolist() if 'id' in df.columns else [str(i) for i in df.index.tolist()]
-        image_paths = df['image_path'].tolist() if 'image_path' in df.columns else None
+        if isinstance(df.index, pd.Index) and df.index.dtype == 'object':
+             image_ids = df.index.astype(str).tolist()
+             logger.info("Using DataFrame index for image identifiers.")
+        elif 'id' in df.columns:
+            image_ids = df['id'].astype(str).tolist()
+            logger.info("Using 'id' column for image identifiers.")
+        elif 'image_path' in df.columns:
+             image_ids = df['image_path'].astype(str).tolist()
+             logger.info("Using 'image_path' column for image identifiers.")
+        else:
+             image_ids = [str(i) for i in range(embeddings.shape[0])]
+             logger.warning("No suitable index or identifier column ('id', 'image_path') found. Using simple range index. Contact sheets from ZIP may not work correctly.")
 
-        logger.info(f"Загружено {embeddings.shape[0]} эмбеддингов из {file_path}")
-        return embeddings, image_ids, image_paths
+        image_paths_column = df['image_path'].tolist() if 'image_path' in df.columns else None
+
+        logger.info(f"Загружено {embeddings.shape[0]} эмбеддингов и {len(image_ids)} идентификаторов из {file_path}")
+        return embeddings, image_ids, image_paths_column
 
     except Exception as e:
         logger.error(f"Ошибка загрузки Parquet файла {file_path}: {e}", exc_info=True)
@@ -104,9 +125,11 @@ def perform_clustering(embeddings, algorithm, params):
 
     return labels, centroids, metrics, processing_time
 
-def find_nearest_images_to_centroids(embeddings, labels, centroids, image_ids, image_paths, n_images):
+def find_nearest_images_to_centroids(embeddings, labels, centroids, image_ids, n_images):
     nearest_neighbors = {}
-    if not image_paths or centroids.shape[0] == 0: return nearest_neighbors
+    if centroids.shape[0] == 0 or not image_ids:
+        logger.warning("No centroids or image IDs provided for finding nearest neighbors.")
+        return nearest_neighbors
 
     unique_labels = np.unique(labels)
     num_clusters = centroids.shape[0]
@@ -125,60 +148,105 @@ def find_nearest_images_to_centroids(embeddings, labels, centroids, image_ids, i
         current_label = i
         cluster_mask = (labels == current_label)
         cluster_indices = np.where(cluster_mask)[0]
-        if len(cluster_indices) == 0: continue
+
+        if len(cluster_indices) == 0:
+            logger.debug(f"Cluster {current_label} has no points, skipping neighbor search.")
+            continue
+
         cluster_embeddings = embeddings[cluster_indices]
         centroid = centroids[i]
         k_search = min(n_images, len(cluster_indices))
         if k_search == 0: continue
+
         distances = []
         indices_in_cluster = []
+        nearest_global_indices = []
 
         if faiss_index:
             try:
-                 D, I = faiss_index.search(np.array([centroid]), k=min(k_search * 5, embeddings.shape[0]))
-                 indices_global = I[0]
-                 filtered_indices = [idx for idx in indices_global if labels[idx] == current_label]
-                 top_k_indices_global = filtered_indices[:k_search]
-                 final_distances = []
-                 for global_idx in top_k_indices_global:
-                      dist = np.linalg.norm(embeddings[global_idx] - centroid)
-                      final_distances.append(dist)
+                search_k_faiss = min(k_search * 5 + 10, embeddings.shape[0])
+                D, I = faiss_index.search(np.array([centroid]), k=search_k_faiss)
+                indices_global_candidates = I[0]
+                filtered_global_indices = [idx for idx in indices_global_candidates if labels[idx] == current_label]
+                top_k_indices_global = filtered_global_indices[:k_search]
 
-                 indices_local = []
-                 cluster_indices_list = list(cluster_indices)
-                 map_global_to_local = {glob_idx: loc_idx for loc_idx, glob_idx in enumerate(cluster_indices_list)}
+                if len(top_k_indices_global) < k_search:
+                    logger.warning(f"Faiss found only {len(top_k_indices_global)} neighbors for cluster {current_label} (requested {k_search}). Might be inaccurate.")
 
-                 for glob_idx in top_k_indices_global:
-                     if glob_idx in map_global_to_local:
-                         indices_local.append(map_global_to_local[glob_idx])
-                     else:
-                         logger.warning(f"Global index {glob_idx} not found in cluster_indices for cluster {current_label} during Faiss post-processing.")
+                final_distances = []
+                for global_idx in top_k_indices_global:
+                    dist = np.linalg.norm(embeddings[global_idx] - centroid)
+                    final_distances.append(dist)
 
+                distances = np.array(final_distances)
+                nearest_global_indices = top_k_indices_global
 
-                 distances = np.array(final_distances)
-                 indices_in_cluster = np.array(indices_local)
             except Exception as faiss_search_e:
                 logger.warning(f"Ошибка поиска Faiss для кластера {current_label}: {faiss_search_e}. Переключение на sklearn.")
                 faiss_index = None
 
-        if not faiss_index:
+        if not faiss_index or not nearest_global_indices:
              dist_to_centroid = euclidean_distances(cluster_embeddings, np.array([centroid])).flatten()
              sorted_indices_local = np.argsort(dist_to_centroid)
              indices_in_cluster = sorted_indices_local[:k_search]
              distances = dist_to_centroid[indices_in_cluster]
+             nearest_global_indices = [cluster_indices[local_idx] for local_idx in indices_in_cluster]
 
         neighbors_for_cluster = []
-        for j, local_idx in enumerate(indices_in_cluster):
-            global_idx = cluster_indices[local_idx]
-            img_id = image_ids[global_idx]
-            img_path = image_paths[global_idx]
-            dist = distances[j]
-            neighbors_for_cluster.append((img_id, img_path, float(dist)))
+        for j, global_idx in enumerate(nearest_global_indices):
+            if global_idx < len(image_ids):
+                img_id = image_ids[global_idx]
+                dist = distances[j]
+                neighbors_for_cluster.append((img_id, float(dist)))
+            else:
+                logger.error(f"Global index {global_idx} out of bounds for image_ids (len {len(image_ids)})")
+
         nearest_neighbors[current_label] = neighbors_for_cluster
+        logger.debug(f"Found {len(neighbors_for_cluster)} neighbors for cluster {current_label}")
     return nearest_neighbors
 
-def create_contact_sheet(image_paths, output_path, grid_size, thumb_size, format='JPEG'):
-    if not image_paths: return False
+def _try_open_image_from_nested_zip(outer_zip_ref, path_to_nested_zip, path_within_nested_zip, thumb_size):
+    try:
+        nested_zip_bytes = outer_zip_ref.read(path_to_nested_zip)
+        with zipfile.ZipFile(io.BytesIO(nested_zip_bytes), 'r') as inner_zip:
+            with inner_zip.open(path_within_nested_zip) as image_file_handle:
+                image_data = io.BytesIO(image_file_handle.read())
+                img = Image.open(image_data)
+                if img.mode != 'RGB':
+                    img = img.convert('RGB')
+                img.thumbnail(thumb_size, Image.Resampling.LANCZOS)
+                return img, None
+    except KeyError as e:
+        if str(e) == path_to_nested_zip:
+             logger.warning(f"Nested zip not found in outer archive: '{path_to_nested_zip}'")
+             return None, "Nested Zip NF"
+        elif str(e) == path_within_nested_zip:
+             logger.warning(f"Image not found within nested zip '{path_to_nested_zip}': '{path_within_nested_zip}'")
+             return None, "Image NF"
+        else:
+             logger.error(f"Unexpected KeyError accessing zip: {e}")
+             return None, "Key Error"
+    except zipfile.BadZipFile:
+        logger.warning(f"Invalid or corrupted nested zip file: '{path_to_nested_zip}'")
+        return None, "Bad Nested Zip"
+    except UnidentifiedImageError:
+        logger.warning(f"File in nested zip is not a valid image: '{path_within_nested_zip}' in '{path_to_nested_zip}'")
+        return None, "Not Image"
+    except Exception as e:
+        logger.error(f"Error processing image '{path_within_nested_zip}' from nested zip '{path_to_nested_zip}': {e}", exc_info=True)
+        return None, "Read Error"
+
+def create_contact_sheet(archive_path, internal_image_paths, output_path, grid_size, thumb_size, format='JPEG'):
+    if not internal_image_paths:
+        logger.warning("No internal image paths provided for contact sheet creation.")
+        return False
+    if not archive_path or not os.path.exists(archive_path):
+        logger.warning(f"Archive path not provided or does not exist: {archive_path}. Cannot create contact sheet.")
+        return False
+    if not zipfile.is_zipfile(archive_path):
+        logger.error(f"File is not a valid ZIP archive: {archive_path}")
+        return False
+
     cols, rows = grid_size
     thumb_w, thumb_h = thumb_size
     gap = 5
@@ -186,36 +254,99 @@ def create_contact_sheet(image_paths, output_path, grid_size, thumb_size, format
     total_height = rows * thumb_h + (rows + 1) * gap
     contact_sheet = Image.new('RGB', (total_width, total_height), color='white')
     draw = ImageDraw.Draw(contact_sheet)
-    try: font = ImageFont.truetype("arial.ttf", 10)
-    except IOError: font = ImageFont.load_default()
+    try:
+        try: font = ImageFont.truetype("arial.ttf", 10)
+        except IOError:
+            try: font = ImageFont.truetype("DejaVuSans.ttf", 10)
+            except IOError: font = ImageFont.load_default()
+    except Exception: font = ImageFont.load_default()
+
     current_col, current_row = 0, 0
-    for img_path in image_paths[:cols*rows]:
-        try:
-            img = Image.open(img_path)
-            img.thumbnail(thumb_size, Image.Resampling.LANCZOS)
-            x_pos = gap + current_col * (thumb_w + gap)
-            y_pos = gap + current_row * (thumb_h + gap)
-            contact_sheet.paste(img, (x_pos, y_pos))
-        except FileNotFoundError:
-            logger.warning(f"Файл не найден для отпечатка: {img_path}")
-            x_pos = gap + current_col * (thumb_w + gap); y_pos = gap + current_row * (thumb_h + gap)
-            draw.rectangle([x_pos, y_pos, x_pos + thumb_w, y_pos + thumb_h], fill="lightgray", outline="red")
-            draw.text((x_pos + 5, y_pos + 5), "Not Found", fill="red", font=font)
-        except Exception as e:
-            logger.error(f"Ошибка обработки {img_path} для отпечатка: {e}")
-            x_pos = gap + current_col * (thumb_w + gap); y_pos = gap + current_row * (thumb_h + gap)
-            draw.rectangle([x_pos, y_pos, x_pos + thumb_w, y_pos + thumb_h], fill="lightgray", outline="orange")
-            draw.text((x_pos + 5, y_pos + 5), "Error", fill="orange", font=font)
-        current_col += 1
-        if current_col >= cols:
-            current_col = 0; current_row += 1
+    files_drawn = 0
+
+    outer_zip_basename = os.path.basename(archive_path)
+    potential_top_folder = None
+    if '_' in outer_zip_basename:
+        potential_top_folder = outer_zip_basename.split('_', 1)[1].rsplit('.', 1)[0]
+        logger.info(f"Deduced potential top-level folder in zip: '{potential_top_folder}' from '{outer_zip_basename}'")
+
+    try:
+        with zipfile.ZipFile(archive_path, 'r') as main_zip_ref:
+            logger.debug(f"Opened main archive: {archive_path}")
+
+            for parquet_image_path in internal_image_paths:
+                if files_drawn >= cols * rows:
+                    logger.info(f"Reached grid limit ({cols*rows}), stopping.")
+                    break
+
+                img = None
+                error_message = None
+                found_image = False
+
+                normalized_parquet_path = parquet_image_path.replace('\\', '/')
+
+                path_parts = normalized_parquet_path.split('/', 1)
+                if len(path_parts) < 2:
+                    logger.warning(f"Skipping invalid path format (no '/' found): {normalized_parquet_path}")
+                    error_message = "Invalid Path"
+                else:
+                    nested_zip_key = path_parts[0]
+                    path_within_nested_zip = normalized_parquet_path
+
+                    nested_zip_filename = f"{nested_zip_key}.zip"
+                    path_to_nested_zip_in_outer = nested_zip_filename
+                    if potential_top_folder:
+                        path_to_nested_zip_in_outer = f"{potential_top_folder}/{nested_zip_filename}"
+
+                    logger.debug(f"Searching for image '{path_within_nested_zip}' within nested zip '{path_to_nested_zip_in_outer}'")
+
+                    img, error_message = _try_open_image_from_nested_zip(
+                        main_zip_ref,
+                        path_to_nested_zip_in_outer,
+                        path_within_nested_zip,
+                        thumb_size
+                    )
+
+                    if img:
+                        found_image = True
+
+                x_pos = gap + current_col * (thumb_w + gap)
+                y_pos = gap + current_row * (thumb_h + gap)
+
+                if found_image and img:
+                    try:
+                        contact_sheet.paste(img, (x_pos, y_pos))
+                        logger.debug(f"Pasted image for '{normalized_parquet_path}'")
+                    except Exception as paste_e:
+                         logger.error(f"Error pasting image for {normalized_parquet_path}: {paste_e}")
+                         error_message = "Paste Error"
+                         draw.rectangle([x_pos, y_pos, x_pos + thumb_w, y_pos + thumb_h], fill="lightcoral", outline="red")
+                         draw.text((x_pos + 5, y_pos + 5), error_message, fill="red", font=font)
+                else:
+                    if not error_message: error_message = "Not Found"
+                    draw.rectangle([x_pos, y_pos, x_pos + thumb_w, y_pos + thumb_h], fill="lightgray", outline="darkred")
+                    draw.text((x_pos + 5, y_pos + 5), error_message, fill="darkred", font=font)
+
+                current_col += 1
+                if current_col >= cols:
+                    current_col = 0
+                    current_row += 1
+                files_drawn += 1
+
+    except zipfile.BadZipFile:
+        logger.error(f"Failed to open MAIN ZIP archive (BadZipFile): {archive_path}")
+        return False
+    except Exception as e:
+         logger.error(f"Unexpected error during contact sheet creation from MAIN ZIP {archive_path}: {e}", exc_info=True)
+         return False
+
     try:
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        contact_sheet.save(output_path, format=format, quality=85)
-        logger.info(f"Контактный отпечаток сохранен: {output_path}")
+        contact_sheet.save(output_path, format=format.upper(), quality=85, optimize=True)
+        logger.info(f"Contact sheet saved: {output_path} (processed {len(internal_image_paths)} paths, drew {files_drawn} cells)")
         return True
     except Exception as e:
-        logger.error(f"Ошибка сохранения контактного отпечатка {output_path}: {e}", exc_info=True)
+        logger.error(f"Error saving contact sheet {output_path}: {e}", exc_info=True)
         return False
 
 def calculate_and_save_centroids_2d(session_id):
@@ -285,7 +416,7 @@ def calculate_and_save_centroids_2d(session_id):
         db.session.rollback()
         logger.error(f"Error calculating/saving 2D centroids for session {session_id}: {e}", exc_info=True)
 
-def save_clustering_results(session, labels, centroids, nearest_neighbors_map, image_paths_available):
+def save_clustering_results(session, labels, centroids, nearest_neighbors_map, image_ids_available, archive_path=None):
     app_config = current_app.config
     contact_sheet_dir_base = app_config['CONTACT_SHEET_FOLDER']
     grid_size = app_config.get('CONTACT_SHEET_GRID_SIZE', (3, 3))
@@ -294,14 +425,18 @@ def save_clustering_results(session, labels, centroids, nearest_neighbors_map, i
     unique_labels = np.unique(labels)
     created_cluster_metadata = []
 
+    logger.info(f"Saving results for session {session.id}. Archive provided: {'Yes' if archive_path else 'No'}")
+
     for i, label in enumerate(unique_labels):
         if label == -1: continue
+
         cluster_mask = (labels == label)
         cluster_size = int(np.sum(cluster_mask))
         centroid_index = int(label)
         if centroid_index < 0 or centroid_index >= len(centroids):
-             logger.error(f"Некорректный индекс центроида {centroid_index} для метки {label} в сессии {session.id}")
-             continue
+            logger.error(f"Invalid centroid index {centroid_index} for label {label} in session {session.id}. Centroids len: {len(centroids)}")
+            continue
+
         centroid_vector = centroids[centroid_index]
         cluster_meta = ClusterMetadata(
             session_id=session.id, cluster_label=str(label), original_cluster_id=str(label),
@@ -310,17 +445,28 @@ def save_clustering_results(session, labels, centroids, nearest_neighbors_map, i
         cluster_meta.set_centroid(centroid_vector)
         cluster_meta.set_metrics({})
         cluster_meta.set_centroid_2d(None)
+
         contact_sheet_path = None
-        if image_paths_available and label in nearest_neighbors_map and nearest_neighbors_map[label]:
+        if archive_path and image_ids_available and label in nearest_neighbors_map and nearest_neighbors_map[label]:
+            logger.debug(f"Attempting contact sheet for cluster {label}. Archive: {archive_path}, Neighbors: {len(nearest_neighbors_map[label])}")
             sheet_filename = f"cs_{session.id}_{label}.{output_format.lower()}"
             session_sheet_dir = os.path.join(contact_sheet_dir_base, session.id)
             sheet_full_path = os.path.join(session_sheet_dir, sheet_filename)
-            neighbor_paths = [p for _, p, _ in nearest_neighbors_map[label]]
-            if create_contact_sheet(neighbor_paths, sheet_full_path, grid_size, thumb_size, output_format):
-                 contact_sheet_path = sheet_full_path
+            parquet_paths_for_sheet = [img_id for img_id, _ in nearest_neighbors_map[label]]
+
+            if create_contact_sheet(archive_path, parquet_paths_for_sheet, sheet_full_path, grid_size, thumb_size, output_format):
+                contact_sheet_path = sheet_full_path
+            else:
+                logger.warning(f"Failed to create contact sheet for cluster {label} using archive {archive_path}")
+        elif not archive_path and label in nearest_neighbors_map:
+             logger.info(f"Contact sheet for cluster {label} skipped: Image archive not provided.")
+        elif not image_ids_available and label in nearest_neighbors_map:
+             logger.info(f"Contact sheet for cluster {label} skipped: Image IDs/Paths not available from Parquet.")
+
         cluster_meta.contact_sheet_path = contact_sheet_path
         db.session.add(cluster_meta)
         created_cluster_metadata.append(cluster_meta)
+
     return created_cluster_metadata
 
 def get_cluster_labels_for_session(session: ClusteringSession, embeddings: np.ndarray) -> np.ndarray | None:
@@ -375,7 +521,6 @@ def get_cluster_labels_for_session(session: ClusteringSession, embeddings: np.nd
                 kmeans = KMeans(n_clusters=n_clusters_param, random_state=42, n_init=1)
                 labels = kmeans.fit_predict(embeddings)
 
-
         elif algorithm == 'dbscan':
             eps = float(params.get('eps', 0.5))
             min_samples = int(params.get('min_samples', 5))
@@ -402,12 +547,15 @@ def get_cluster_labels_for_session(session: ClusteringSession, embeddings: np.nd
         logger.error(f"Error re-calculating labels for session {session.id}: {e}", exc_info=True)
         return None
 
-def run_clustering_pipeline(user_id, file_path, algorithm, params, original_filename):
+def run_clustering_pipeline(user_id, embedding_file_path, algorithm, params,
+                            original_embedding_filename, archive_path=None,
+                            original_archive_filename=None):
     session_id = str(uuid.uuid4())
     logger.info(f"Запуск синхронной кластеризации {session_id} для пользователя {user_id}")
     session = ClusteringSession(
         id=session_id, user_id=user_id, status='STARTED', algorithm=algorithm,
-        input_file_path=file_path, original_input_filename=original_filename
+        input_file_path=embedding_file_path,
+        original_input_filename=original_embedding_filename
     )
     session.set_params(params)
     db.session.add(session)
@@ -419,48 +567,66 @@ def run_clustering_pipeline(user_id, file_path, algorithm, params, original_file
         raise ValueError(f"Не удалось создать сессию в БД: {commit_err}") from commit_err
 
     try:
-        embeddings, image_ids, image_paths = load_embeddings(file_path)
-        image_paths_available = image_paths is not None
+        embeddings, image_ids, _ = load_embeddings(embedding_file_path)
+        image_ids_available = image_ids is not None and len(image_ids) == embeddings.shape[0]
+
         labels, centroids, metrics, processing_time = perform_clustering(embeddings, algorithm, params)
+
         session.processing_time_sec = processing_time
-        unique_labels = np.unique(labels)
         n_clusters_found = len(centroids)
         session.num_clusters = n_clusters_found
-        logger.info(f"Session {session_id}: Найдено {n_clusters_found} кластеров.")
+        logger.info(f"Session {session_id}: Found {n_clusters_found} clusters (excluding noise if any).")
+
         nearest_neighbors_map = {}
-        if image_paths_available:
-            logger.info(f"Session {session_id}: Поиск изображений для отпечатков...")
+        if image_ids_available and n_clusters_found > 0:
+            logger.info(f"Session {session_id}: Finding nearest neighbors...")
             images_per_cluster = current_app.config.get('CONTACT_SHEET_IMAGES_PER_CLUSTER', 9)
             nearest_neighbors_map = find_nearest_images_to_centroids(
-                embeddings, labels, centroids, image_ids, image_paths, images_per_cluster
+                embeddings, labels, centroids, image_ids, images_per_cluster
             )
-        logger.info(f"Session {session_id}: Сохранение результатов кластеризации...")
-        save_clustering_results(session, labels, centroids, nearest_neighbors_map, image_paths_available)
+            logger.info(f"Session {session_id}: Found neighbors for {len(nearest_neighbors_map)} clusters.")
+        elif n_clusters_found == 0:
+             logger.info(f"Session {session_id}: No clusters found, skipping neighbor search.")
+        else:
+             logger.warning(f"Session {session_id}: Skipping neighbor search as image IDs/paths were not properly loaded.")
+
+        logger.info(f"Session {session_id}: Saving clustering results...")
+        save_clustering_results(session, labels, centroids, nearest_neighbors_map, image_ids_available, archive_path)
+
         session.status = 'PROCESSING'
         db.session.commit()
+        logger.info(f"Session {session_id}: Calculating 2D centroids...")
         calculate_and_save_centroids_2d(session.id)
+
         session.status = 'SUCCESS'
-        session.result_message = f'Кластеризация завершена. Найдено {n_clusters_found} кластеров.'
+        final_cluster_count = ClusterMetadata.query.with_session(db.session).filter_by(session_id=session.id, is_deleted=False).count()
+        session.num_clusters = final_cluster_count
+        session.result_message = f'Кластеризация завершена. Найдено {final_cluster_count} кластеров.'
+        flag_modified(session, "num_clusters")
+        flag_modified(session, "result_message")
         db.session.commit()
-        logger.info(f"Синхронная кластеризация {session_id} успешно завершена (включая 2D центроиды).")
+
+        logger.info(f"Синхронная кластеризация {session_id} успешно завершена.")
         return session.id
+
     except Exception as e:
         db.session.rollback()
         logger.error(f"Ошибка в синхронной кластеризации {session_id}: {e}", exc_info=True)
         try:
-             fail_session = db.session.get(ClusteringSession, session_id)
-             if fail_session:
+            fail_session = db.session.get(ClusteringSession, session_id)
+            if fail_session:
                 fail_session.status = 'FAILURE'
                 fail_session.result_message = f"Ошибка: {str(e)[:500]}"
                 db.session.commit()
-             else:
+            else:
                 logger.error(f"Не удалось найти сессию {session_id} для обновления статуса на FAILURE")
         except Exception as db_err:
-             db.session.rollback()
-             logger.error(f"Не удалось обновить статус сессии {session_id} на FAILURE: {db_err}", exc_info=True)
+            db.session.rollback()
+            logger.error(f"Не удалось обновить статус сессии {session_id} на FAILURE: {db_err}", exc_info=True)
         raise
 
 def run_reclustering_pipeline(original_session_id, user_id):
+    logger.warning("run_reclustering_pipeline might need updates for contact sheet generation based on parquet paths")
     new_session_id = str(uuid.uuid4())
     logger.info(f"Запуск синхронной рекластеризации {new_session_id} для сессии {original_session_id}")
     original_session = db.session.get(ClusteringSession, original_session_id)
@@ -481,34 +647,50 @@ def run_reclustering_pipeline(original_session_id, user_id):
         raise ValueError(f"Не удалось создать сессию рекластеризации: {commit_err}") from commit_err
 
     try:
-        embeddings, image_ids, image_paths = load_embeddings(original_session.input_file_path)
-        image_paths_available = image_paths is not None
+        embeddings, image_ids, _ = load_embeddings(original_session.input_file_path)
+        image_ids_available = image_ids is not None and len(image_ids) == embeddings.shape[0]
+
         labels, centroids, metrics, processing_time = perform_clustering(
             embeddings, new_session.algorithm, new_session.get_params()
         )
         new_session.processing_time_sec = processing_time
-        unique_labels = np.unique(labels)
         n_clusters_found = len(centroids)
         new_session.num_clusters = n_clusters_found
         logger.info(f"Recluster {new_session_id}: Найдено {n_clusters_found} кластеров.")
+
         nearest_neighbors_map = {}
-        if image_paths_available:
-            logger.info(f"Recluster {new_session_id}: Поиск изображений...")
+        archive_path = None
+
+        if image_ids_available and n_clusters_found > 0 and archive_path:
+            logger.info(f"Recluster {new_session_id}: Finding nearest neighbors...")
             images_per_cluster = current_app.config.get('CONTACT_SHEET_IMAGES_PER_CLUSTER', 9)
             nearest_neighbors_map = find_nearest_images_to_centroids(
-                embeddings, labels, centroids, image_ids, image_paths, images_per_cluster
+                embeddings, labels, centroids, image_ids, images_per_cluster
             )
-        logger.info(f"Recluster {new_session_id}: Сохранение результатов...")
-        save_clustering_results(new_session, labels, centroids, nearest_neighbors_map, image_paths_available)
+            logger.info(f"Recluster {new_session_id}: Found neighbors for {len(nearest_neighbors_map)} clusters.")
+        else:
+            logger.info(f"Recluster {new_session_id}: Skipping neighbor search (no clusters, no IDs, or no archive path).")
+
+        logger.info(f"Recluster {new_session_id}: Saving results...")
+        save_clustering_results(new_session, labels, centroids, nearest_neighbors_map, image_ids_available, archive_path)
+
         new_session.status = 'PROCESSING'
         db.session.commit()
+
         calculate_and_save_centroids_2d(new_session.id)
+
         new_session.status = 'SUCCESS'
-        new_session.result_message = f'Рекластеризация завершена. Найдено {n_clusters_found} кластеров.'
-        original_session.status = 'RECLUSTERED'
+        final_cluster_count = ClusterMetadata.query.with_session(db.session).filter_by(session_id=new_session.id, is_deleted=False).count()
+        new_session.num_clusters = final_cluster_count
+        new_session.result_message = f'Рекластеризация завершена. Найдено {final_cluster_count} кластеров.'
+
+        flag_modified(new_session, "num_clusters")
+        flag_modified(new_session, "result_message")
+
         db.session.commit()
         logger.info(f"Синхронная рекластеризация {new_session_id} успешно завершена.")
         return new_session.id
+
     except Exception as e:
         db.session.rollback()
         logger.error(f"Ошибка в синхронной рекластеризации {new_session_id}: {e}", exc_info=True)
@@ -517,13 +699,13 @@ def run_reclustering_pipeline(original_session_id, user_id):
             if fail_session:
                 fail_session.status = 'FAILURE'
                 fail_session.result_message = f"Ошибка рекластеризации: {str(e)[:500]}"
-            if original_session:
-                 original_session.status = 'RECLUSTERING_FAILED'
+
             db.session.commit()
         except Exception as db_err:
              db.session.rollback()
              logger.error(f"Не удалось обновить статус сессии {new_session_id} на FAILURE: {db_err}", exc_info=True)
         raise
+
 
 def generate_and_save_scatter_data(session_id, embeddings, labels):
     logger.info(f"Генерация и сохранение данных Scatter Plot для сессии {session_id}")
@@ -598,7 +780,6 @@ def generate_and_save_scatter_data(session_id, embeddings, labels):
 
     return scatter_cache_file_path, pca_time_sec
 
-
 def redistribute_cluster_data(session_id, cluster_label_to_remove_str, user_id):
     logger.info(f"Запуск перераспределения для кластера {cluster_label_to_remove_str} в сессии {session_id}")
     session = db.session.get(ClusteringSession, session_id)
@@ -612,6 +793,7 @@ def redistribute_cluster_data(session_id, cluster_label_to_remove_str, user_id):
     if not cluster_to_remove:
         raise ValueError(f"Кластер {cluster_label_to_remove_str} не найден или уже удален")
 
+    sheet_path_to_delete = cluster_to_remove.contact_sheet_path
     removed_cluster_display_name = cluster_to_remove.name or f"Кластер {cluster_label_to_remove_str}"
 
     remaining_clusters = session.clusters.filter(
@@ -631,36 +813,36 @@ def redistribute_cluster_data(session_id, cluster_label_to_remove_str, user_id):
     if not remaining_clusters:
         logger.warning(f"Нет активных кластеров для перераспределения из {cluster_label_to_remove_str}. Кластер будет просто удален.")
         cluster_to_remove.is_deleted = True
-        sheet_path = cluster_to_remove.contact_sheet_path
         cluster_to_remove.contact_sheet_path = None
         log_manual_adjustment(session.id, user_id, "DELETE_CLUSTER_NO_TARGETS", {"cluster_label": cluster_label_to_remove_str, "cluster_name": cluster_to_remove.name})
-
         session.result_message = f"'{removed_cluster_display_name}' удален. Других кластеров для перераспределения не найдено."
         flag_modified(session, "result_message")
-
         db.session.commit()
-        if sheet_path and os.path.exists(sheet_path):
-            try: os.remove(sheet_path)
-            except OSError as e: logger.error(f"Error deleting contact sheet file {sheet_path}: {e}")
+        if sheet_path_to_delete and os.path.exists(sheet_path_to_delete):
+            try:
+                os.remove(sheet_path_to_delete)
+                logger.info(f"Deleted contact sheet file for removed cluster: {sheet_path_to_delete}")
+            except OSError as e:
+                logger.error(f"Error deleting contact sheet file {sheet_path_to_delete}: {e}")
         calculate_and_save_centroids_2d(session.id)
         return {"message": session.result_message}
 
     try:
-        embeddings, image_ids, image_paths = load_embeddings(session.input_file_path)
-        if embeddings is None:
-            raise ValueError("Не удалось загрузить эмбеддинги для перераспределения.")
+         embeddings, image_ids, _ = load_embeddings(session.input_file_path)
+         if embeddings is None:
+             raise ValueError("Не удалось загрузить эмбеддинги для перераспределения.")
 
-        initial_labels = get_cluster_labels_for_session(session, embeddings)
-        if initial_labels is None:
+         initial_labels = get_cluster_labels_for_session(session, embeddings)
+         if initial_labels is None:
              raise RuntimeError(f"Не удалось получить/пересчитать исходные метки для сессии {session_id}.")
-        if initial_labels.shape[0] != embeddings.shape[0]:
+         if initial_labels.shape[0] != embeddings.shape[0]:
              raise RuntimeError(f"Размер эмбеддингов ({embeddings.shape[0]}) не совпадает с размером исходных меток ({initial_labels.shape[0]})")
 
-        cluster_label_to_remove_int = int(cluster_label_to_remove_str)
+         cluster_label_to_remove_int = int(cluster_label_to_remove_str)
 
     except (ValueError, RuntimeError, FileNotFoundError) as e:
-        logger.error(f"Ошибка подготовки данных для перераспределения {session_id}/{cluster_label_to_remove_str}: {e}", exc_info=True)
-        raise ValueError(f"Ошибка подготовки данных: {e}") from e
+         logger.error(f"Ошибка подготовки данных для перераспределения {session_id}/{cluster_label_to_remove_str}: {e}", exc_info=True)
+         raise ValueError(f"Ошибка подготовки данных: {e}") from e
 
     try:
         point_indices_to_move = np.where(initial_labels == cluster_label_to_remove_int)[0]
@@ -669,21 +851,17 @@ def redistribute_cluster_data(session_id, cluster_label_to_remove_str, user_id):
         if len(point_indices_to_move) == 0:
             logger.warning(f"Не найдено точек для перераспределения из кластера {cluster_label_to_remove_str}. Кластер будет помечен как удаленный.")
             cluster_to_remove.is_deleted = True
-            sheet_path = cluster_to_remove.contact_sheet_path
             cluster_to_remove.contact_sheet_path = None
             log_manual_adjustment(session.id, user_id, "DELETE_CLUSTER_NO_POINTS", {"cluster_label": cluster_label_to_remove_str, "cluster_name": cluster_to_remove.name})
-
             session.result_message = f"'{removed_cluster_display_name}' удален. Точек для перераспределения не найдено."
             flag_modified(session, "result_message")
-
             db.session.commit()
-            if sheet_path and os.path.exists(sheet_path):
-                try: os.remove(sheet_path)
-                except OSError as e: logger.error(f"Error deleting contact sheet file {sheet_path}: {e}")
+            if sheet_path_to_delete and os.path.exists(sheet_path_to_delete):
+                try: os.remove(sheet_path_to_delete); logger.info(f"Deleted contact sheet file: {sheet_path_to_delete}")
+                except OSError as e: logger.error(f"Error deleting contact sheet file {sheet_path_to_delete}: {e}")
             calculate_and_save_centroids_2d(session.id)
 
             final_labels[final_labels == cluster_label_to_remove_int] = -1
-
             new_cache_path, _ = generate_and_save_scatter_data(session.id, embeddings, final_labels)
             if new_cache_path:
                 session_reloaded = db.session.get(ClusteringSession, session_id)
@@ -728,7 +906,6 @@ def redistribute_cluster_data(session_id, cluster_label_to_remove_str, user_id):
             final_labels[point_global_idx] = new_label_for_point
 
         cluster_to_remove.is_deleted = True
-        sheet_path = cluster_to_remove.contact_sheet_path
         cluster_to_remove.contact_sheet_path = None
 
         redistribution_log_details = {
@@ -795,12 +972,12 @@ def redistribute_cluster_data(session_id, cluster_label_to_remove_str, user_id):
         logger.info(f"Данные для кластера {cluster_label_to_remove_str} перераспределены. Обновление 2D координат...")
         calculate_and_save_centroids_2d(session.id)
 
-        if sheet_path and os.path.exists(sheet_path):
+        if sheet_path_to_delete and os.path.exists(sheet_path_to_delete):
             try:
-                os.remove(sheet_path)
-                logger.info(f"Удален файл контактного отпечатка: {sheet_path}")
+                os.remove(sheet_path_to_delete)
+                logger.info(f"Удален файл контактного отпечатка для удаленного кластера: {sheet_path_to_delete}")
             except OSError as e:
-                 logger.error(f"Ошибка удаления файла контактного отпечатка {sheet_path}: {e}")
+                 logger.error(f"Ошибка удаления файла контактного отпечатка {sheet_path_to_delete}: {e}")
 
         logger.info(f"Перераспределение для кластера {cluster_label_to_remove_str} в сессии {session_id} завершено успешно.")
         return {"message": session.result_message}

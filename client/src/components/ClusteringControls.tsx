@@ -26,10 +26,11 @@ const PARAM_LABELS: { [key: string]: string } = {
   min_samples: 'Установите минимальное количество точек для формирования кластера (min_samples)'
 };
 
-
 const ClusteringControls: React.FC<ClusteringControlsProps> = ({ onStartClustering, disabled }) => {
     const [selectedFile, setSelectedFile] = useState<File | null>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
+    const [selectedArchive, setSelectedArchive] = useState<File | null>(null);
+    const archiveInputRef = useRef<HTMLInputElement>(null);
     const [selectedAlgorithm, setSelectedAlgorithm] = useState<Algorithm | ''>('');
     const [algorithmParams, setAlgorithmParams] = useState<AlgorithmParamsState>({});
     const [formError, setFormError] = useState<string | null>(null);
@@ -45,10 +46,27 @@ const ClusteringControls: React.FC<ClusteringControlsProps> = ({ onStartClusteri
                 setSelectedFile(null);
                 if (fileInputRef.current) { fileInputRef.current.value = ""; }
                 toast.error("Пожалуйста, выберите файл формата .parquet");
-                setFormError("Неверный формат файла. Требуется .parquet");
+                setFormError("Неверный формат файла эмбеддингов. Требуется .parquet");
             }
         } else {
             setSelectedFile(null);
+        }
+    };
+
+    const handleArchiveChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+        setFormError(null);
+        if (event.target.files && event.target.files.length > 0) {
+            const file = event.target.files[0];
+            if (file.name.endsWith('.zip')) {
+                setSelectedArchive(file);
+            } else {
+                setSelectedArchive(null);
+                if (archiveInputRef.current) { archiveInputRef.current.value = ""; }
+                toast.error("Пожалуйста, выберите файл формата .zip для архива изображений.");
+                setFormError("Неверный формат файла архива. Требуется .zip");
+            }
+        } else {
+            setSelectedArchive(null);
         }
     };
 
@@ -124,16 +142,19 @@ const ClusteringControls: React.FC<ClusteringControlsProps> = ({ onStartClusteri
             const payload: StartClusteringPayload = {
                 embeddingFile: selectedFile,
                 algorithm: selectedAlgorithm,
-                params: parsedParams
+                params: parsedParams,
+                imageArchive: selectedArchive
             };
             await onStartClustering(payload);
             setSelectedFile(null);
             if (fileInputRef.current) fileInputRef.current.value = "";
+            setSelectedArchive(null);
+            if (archiveInputRef.current) archiveInputRef.current.value = "";
             setSelectedAlgorithm('');
             setAlgorithmParams({});
             setFormError(null);
         } catch (error) {
-             console.error("Error during onStartClustering callback:", error);
+            console.error("Error during onStartClustering callback:", error);
         } finally {
             setIsSubmitting(false);
         }
@@ -142,50 +163,99 @@ const ClusteringControls: React.FC<ClusteringControlsProps> = ({ onStartClusteri
     const requiredParams = getRequiredParams();
     const isSubmitDisabled = disabled || isSubmitting || !selectedFile || !selectedAlgorithm || requiredParams.some(p => !algorithmParams[p as keyof AlgorithmParamsState]);
     const startButtonText = `Запустить ${selectedAlgorithm ? selectedAlgorithm.toUpperCase() : 'кластеризацию'}`;
-    const startButtonTitle = !selectedFile ? "Сначала выберите файл" : !selectedAlgorithm ? "Выберите алгоритм" : requiredParams.some(p => !algorithmParams[p as keyof AlgorithmParamsState]) ? "Заполните все параметры алгоритма" : startButtonText;
+    const startButtonTitle = !selectedFile ? "Сначала выберите файл .parquet" : !selectedAlgorithm ? "Выберите алгоритм" : requiredParams.some(p => !algorithmParams[p as keyof AlgorithmParamsState]) ? "Заполните все параметры алгоритма" : startButtonText;
 
     return (
         <div className="card controls-card">
             <h3>Запуск новой кластеризации</h3>
             <div className="clustering-controls-form">
                 <div className="file-upload-wrapper">
-                    <label htmlFor="parquet-upload" className="file-upload-label"> 1. Загрузить файл .parquet: </label>
-                    <input type="file" id="parquet-upload" className="file-input" accept=".parquet" onChange={handleFileChange} ref={fileInputRef} disabled={disabled || isSubmitting} aria-describedby="file-status-info" />
+                    <label htmlFor="parquet-upload" className="file-upload-label">Файл эмбеддингов (.parquet):</label>
+                    <input
+                        type="file"
+                        id="parquet-upload"
+                        className="file-input"
+                        accept=".parquet"
+                        onChange={handleFileChange}
+                        ref={fileInputRef}
+                        disabled={disabled || isSubmitting}
+                        aria-describedby="file-status-info"
+                        required
+                    />
+                </div>
+
+                <div className="file-upload-wrapper">
+                    <label htmlFor="archive-upload" className="file-upload-label">Архив изображений (.zip):</label>
+                    <input
+                        type="file"
+                        id="archive-upload"
+                        className="file-input"
+                        accept=".zip"
+                        onChange={handleArchiveChange}
+                        ref={archiveInputRef}
+                        disabled={disabled || isSubmitting}
+                        aria-describedby="archive-status-info"
+                    />
+                     <small style={{fontSize: '0.8em', color: '#666', marginTop: '3px'}}>Опционально, для контактных отпечатков.</small>
                 </div>
 
                 <div className="form-group algo-select-group">
-                    <label htmlFor="algorithm-select">2. Выбрать алгоритм:</label>
-                    <select id="algorithm-select" value={selectedAlgorithm} onChange={handleAlgorithmChange} disabled={disabled || isSubmitting} className="algo-select" required={selectedFile !== null} >
-                        <option value="" disabled>-- Выберите алгоритм --</option>
+                    <label htmlFor="algorithm-select">Алгоритм:</label>
+                    <select
+                        id="algorithm-select"
+                        value={selectedAlgorithm}
+                        onChange={handleAlgorithmChange}
+                        disabled={disabled || isSubmitting}
+                        className="algo-select"
+                        required={selectedFile !== null}
+                    >
+                        <option value="" disabled>-- Выберите --</option>
                         {ALGORITHMS.map(algo => (<option key={algo.key} value={algo.key}>{algo.name}</option>))}
                     </select>
                 </div>
 
-                <button
-                    className="primary-btn start-clustering-btn"
-                    onClick={handleSubmit}
-                    disabled={isSubmitDisabled}
-                    title={startButtonTitle}
-                >
-                    {isSubmitting ? 'Запуск...' : `3. ${startButtonText}`}
-                </button>
-
                 {selectedAlgorithm && (
                     <div className="algorithm-params">
-                        <label> Параметры для {ALGORITHMS.find(a => a.key === selectedAlgorithm)?.name}: </label>
+                         <label>Параметры для {ALGORITHMS.find(a => a.key === selectedAlgorithm)?.name}:</label>
                         {requiredParams.map(paramName => (
                             <div className="form-group param-group" key={paramName}>
                                 <label htmlFor={`param-${paramName}`}>{PARAM_LABELS[paramName] || paramName}:</label>
-                                <input type="number" id={`param-${paramName}`} name={paramName} value={algorithmParams[paramName as keyof AlgorithmParamsState] ?? ''} onChange={handleParamChange} disabled={disabled || isSubmitting} step={paramName === 'eps' ? '0.01' : '1'} min={paramName === 'eps' ? '0.01' : '1'} required className={`param-input ${(!algorithmParams[paramName as keyof AlgorithmParamsState] && selectedFile && selectedAlgorithm) ? 'input-error' : ''}`} />
+                                <input
+                                    type="number"
+                                    id={`param-${paramName}`}
+                                    name={paramName}
+                                    value={algorithmParams[paramName as keyof AlgorithmParamsState] ?? ''}
+                                    onChange={handleParamChange}
+                                    disabled={disabled || isSubmitting}
+                                    step={paramName === 'eps' ? '0.01' : '1'}
+                                    min={paramName === 'eps' ? '0.01' : '1'}
+                                    required
+                                    className={`param-input ${(!algorithmParams[paramName as keyof AlgorithmParamsState] && selectedFile && selectedAlgorithm) ? 'input-error' : ''}`}
+                                />
                             </div>
                         ))}
                     </div>
                 )}
+
+                <div className="start-button-container">
+                    <button
+                        className="primary-btn start-clustering-btn"
+                        onClick={handleSubmit}
+                        disabled={isSubmitDisabled}
+                        title={startButtonTitle}
+                    >
+                        {isSubmitting ? 'Запуск...' : `${startButtonText}`}
+                    </button>
+                </div>
             </div>
 
             <div id="file-status-info" className="status-messages">
-                {selectedFile && !isSubmitting && (<p className="file-status-info">Выбран файл: {selectedFile.name}</p>)}
-                {!selectedFile && !isSubmitting && (<p className="file-status-info">Файл не выбран.</p>)}
+                {selectedFile && !isSubmitting && (<p className="file-status-info">Выбран файл эмбеддингов: {selectedFile.name}</p>)}
+                {!selectedFile && !isSubmitting && (<p className="file-status-info error">Файл эмбеддингов (.parquet) не выбран.</p>)}
+                <div id="archive-status-info">
+                    {selectedArchive && !isSubmitting && (<p className="file-status-info">Выбран архив изображений: {selectedArchive.name}</p>)}
+                    {!selectedArchive && !isSubmitting && (<p className="file-status-info">Архив изображений (.zip) не выбран (контактные отпечатки не будут созданы).</p>)}
+                </div>
                 {!selectedAlgorithm && selectedFile && !isSubmitting && (<p className="file-status-info error">Алгоритм не выбран.</p>)}
                 {selectedAlgorithm && requiredParams.some(p => !algorithmParams[p as keyof AlgorithmParamsState]) && !isSubmitting && (<p className="file-status-info error">Заполните все параметры для {selectedAlgorithm.toUpperCase()}.</p>)}
                 {formError && <p className="error-message">{formError}</p>}

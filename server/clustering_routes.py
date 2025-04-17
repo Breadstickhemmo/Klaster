@@ -3,6 +3,7 @@ import uuid
 import json
 import logging
 import time
+import zipfile
 from flask import Blueprint, request, jsonify, current_app, send_from_directory
 from flask_jwt_extended import jwt_required, get_jwt_identity
 import numpy as np
@@ -23,66 +24,122 @@ logger = logging.getLogger(__name__)
 
 clustering_bp = Blueprint('clustering_api', __name__, url_prefix='/api/clustering')
 
-ALLOWED_EXTENSIONS = {'parquet'}
+ALLOWED_EXTENSIONS_EMBEDDINGS = {'parquet'}
+ALLOWED_EXTENSIONS_ARCHIVE = {'zip'}
 
-def allowed_file(filename):
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+def allowed_embedding_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS_EMBEDDINGS
+
+def allowed_archive_file(filename):
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS_ARCHIVE
 
 @clustering_bp.route('/start', methods=['POST'])
 @jwt_required()
 def start_clustering():
     current_user_id = get_jwt_identity()
+
     if 'embeddingFile' not in request.files:
         return jsonify({"error": "Файл эмбеддингов ('embeddingFile') не найден"}), 400
-    file = request.files['embeddingFile']
+    embedding_file = request.files['embeddingFile']
     algorithm = request.form.get('algorithm')
     params_str = request.form.get('params', '{}')
+
     if not algorithm or algorithm not in ['kmeans', 'dbscan']:
-         return jsonify({"error": "Алгоритм не указан или не поддерживается (ожидается 'kmeans' или 'dbscan')"}), 400
+        return jsonify({"error": "Алгоритм не указан или не поддерживается (ожидается 'kmeans' или 'dbscan')"}), 400
     try:
         params = json.loads(params_str)
         if not isinstance(params, dict): raise ValueError("Params not a dict")
     except (json.JSONDecodeError, ValueError):
         logger.warning(f"Invalid params received for user {current_user_id}: {params_str}")
         return jsonify({"error": "Некорректный формат JSON для параметров ('params')"}), 400
-    original_filename = file.filename
-    if original_filename == '':
-        return jsonify({"error": "Имя файла не должно быть пустым"}), 400
-    if not allowed_file(original_filename):
-        return jsonify({"error": "Недопустимый тип файла. Разрешен только .parquet"}), 400
-    file_path = None
+
+    original_embedding_filename = embedding_file.filename
+    if original_embedding_filename == '':
+        return jsonify({"error": "Имя файла эмбеддингов не должно быть пустым"}), 400
+    if not allowed_embedding_file(original_embedding_filename):
+        return jsonify({"error": "Недопустимый тип файла эмбеддингов. Разрешен только .parquet"}), 400
+
+    archive_file = request.files.get('imageArchive')
+    original_archive_filename = None
+    archive_path = None
+    archive_filename_for_storage = None
+
+    if archive_file:
+        original_archive_filename = archive_file.filename
+        if original_archive_filename == '':
+             logger.warning(f"User {current_user_id} uploaded an archive with an empty filename. Ignoring.")
+             archive_file = None
+        elif not allowed_archive_file(original_archive_filename):
+             logger.warning(f"User {current_user_id} uploaded an invalid archive type: {original_archive_filename}. Ignoring.")
+             archive_file = None
+        else:
+            try:
+                if not zipfile.is_zipfile(archive_file):
+                     logger.warning(f"User {current_user_id} uploaded a file named .zip that is not a valid ZIP: {original_archive_filename}. Ignoring.")
+                     archive_file = None
+                else:
+                    archive_file.seek(0)
+                    logger.info(f"User {current_user_id} provided a valid image archive: {original_archive_filename}")
+            except Exception as zip_err:
+                logger.warning(f"Error validating ZIP file {original_archive_filename} from user {current_user_id}: {zip_err}. Ignoring file.")
+                archive_file = None
+
+    embedding_file_path = None
+    upload_folder = current_app.config['UPLOAD_FOLDER']
+    embedding_filename_for_storage = f"{uuid.uuid4()}_{secure_filename(original_embedding_filename)}"
+    embedding_file_path = os.path.join(upload_folder, embedding_filename_for_storage)
+
+    if archive_file and original_archive_filename:
+         secure_archive_basename = secure_filename(original_archive_filename)
+         archive_filename_for_storage = f"{uuid.uuid4()}_{secure_archive_basename}"
+         archive_path = os.path.join(upload_folder, archive_filename_for_storage)
+
+    files_to_cleanup = []
     try:
-        secure_base_filename = secure_filename(original_filename)
-        filename_for_storage = f"{uuid.uuid4()}_{secure_base_filename}"
-        upload_folder = current_app.config['UPLOAD_FOLDER']
-        file_path = os.path.join(upload_folder, filename_for_storage)
-        file.save(file_path)
-        logger.info(f"User {current_user_id} uploaded file: {original_filename} (saved as {filename_for_storage})")
+        embedding_file.save(embedding_file_path)
+        files_to_cleanup.append(embedding_file_path)
+        logger.info(f"User {current_user_id} uploaded embedding file: {original_embedding_filename} (saved as {embedding_filename_for_storage})")
+
+        if archive_file and archive_path:
+            archive_file.save(archive_path)
+            files_to_cleanup.append(archive_path)
+            logger.info(f"User {current_user_id} uploaded image archive: {original_archive_filename} (saved as {archive_filename_for_storage})")
+
     except Exception as e:
-        logger.error(f"Failed to save uploaded file for user {current_user_id}: {e}", exc_info=True)
-        if file_path and os.path.exists(file_path):
-            try: os.remove(file_path)
-            except OSError: pass
-        return jsonify({"error": "Не удалось сохранить файл на сервере"}), 500
+        logger.error(f"Failed to save uploaded file(s) for user {current_user_id}: {e}", exc_info=True)
+        for f_path in files_to_cleanup:
+             if os.path.exists(f_path):
+                 try: os.remove(f_path)
+                 except OSError: pass
+        return jsonify({"error": "Не удалось сохранить файл(ы) на сервере"}), 500
+
     try:
         logger.info(f"User {current_user_id} starting SYNC clustering...")
         session_id = run_clustering_pipeline(
-            user_id=current_user_id, file_path=file_path, algorithm=algorithm,
-            params=params, original_filename=original_filename
+            user_id=current_user_id,
+            embedding_file_path=embedding_file_path,
+            archive_path=archive_path,
+            algorithm=algorithm,
+            params=params,
+            original_embedding_filename=original_embedding_filename,
+            original_archive_filename=original_archive_filename
         )
         logger.info(f"User {current_user_id} finished SYNC clustering. Session ID: {session_id}")
         return jsonify({"session_id": session_id}), 201
+
     except (ValueError, SQLAlchemyError) as ve:
         logger.error(f"Validation or DB error during clustering start for user {current_user_id}: {ve}", exc_info=False)
-        if file_path and os.path.exists(file_path):
-             try: os.remove(file_path)
-             except OSError as rem_e: logger.error(f"Error removing file {file_path} after error: {rem_e}")
+        for f_path in files_to_cleanup:
+            if os.path.exists(f_path):
+                 try: os.remove(f_path)
+                 except OSError as rem_e: logger.error(f"Error removing file {f_path} after error: {rem_e}")
         return jsonify({"error": f"Ошибка входных данных или БД: {ve}"}), 400
     except Exception as e:
         logger.error(f"SYNC clustering failed unexpectedly for user {current_user_id}: {e}", exc_info=True)
-        if file_path and os.path.exists(file_path):
-             try: os.remove(file_path)
-             except OSError as rem_e: logger.error(f"Error removing file {file_path} after error: {rem_e}")
+        for f_path in files_to_cleanup:
+             if os.path.exists(f_path):
+                 try: os.remove(f_path)
+                 except OSError as rem_e: logger.error(f"Error removing file {f_path} after error: {rem_e}")
         return jsonify({"error": "Внутренняя ошибка сервера при кластеризации"}), 500
 
 @clustering_bp.route('/sessions', methods=['GET'])
@@ -240,12 +297,7 @@ def get_clustering_results(session_id):
     return jsonify(base_response), 200
 
 @clustering_bp.route('/contact_sheet/<session_id>/<filename>', methods=['GET'])
-@jwt_required()
 def get_contact_sheet_image(session_id, filename):
-    current_user_id = get_jwt_identity()
-    session = db.session.get(ClusteringSession, session_id)
-    if not session or session.user_id != int(current_user_id):
-        return jsonify({"error": "Сессия не найдена или доступ запрещен"}), 404
     if not filename.startswith(f"cs_{session_id}_") or not filename.lower().endswith(f".{current_app.config.get('CONTACT_SHEET_OUTPUT_FORMAT', 'JPEG').lower()}"):
         logger.warning(f"Attempt to access invalid contact sheet filename: {filename} for session {session_id}")
         return jsonify({"error": "Некорректное имя файла отпечатка"}), 400
@@ -285,7 +337,6 @@ def delete_and_redistribute_cluster(session_id, cluster_label):
     except Exception as e:
         logger.error(f"Unexpected error during redistribute for {session_id}/{cluster_label} by user {current_user_id}: {e}", exc_info=True)
         return jsonify({"error": "Неизвестная внутренняя ошибка сервера"}), 500
-
 
 @clustering_bp.route('/results/<session_id>/adjust', methods=['POST'])
 @jwt_required()
