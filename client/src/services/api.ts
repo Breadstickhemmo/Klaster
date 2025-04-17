@@ -17,6 +17,12 @@ export interface ClusterResult {
     centroid_2d?: [number, number] | null;
 }
 
+export interface AdjustmentLogEntry {
+    timestamp: string;
+    action_type: string;
+    details: any;
+}
+
 export interface SessionResultResponse {
     session_id: string;
     status: string;
@@ -30,6 +36,7 @@ export interface SessionResultResponse {
     scatter_pca_time_sec?: number | null;
     message?: string;
     error?: string;
+    adjustments?: AdjustmentLogEntry[];
 }
 
 export interface SessionListItem {
@@ -145,6 +152,7 @@ export const renameCluster = async (fetchWithAuth: FetchWithAuth, sessionId: str
     const payload: RenameClusterPayload = { action: 'RENAME', cluster_id: clusterId, new_name: newName };
     const response = await fetchWithAuth(`/api/clustering/results/${sessionId}/adjust`, {
         method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
     });
     return handleResponse(response);
@@ -154,6 +162,7 @@ export const mergeSelectedClusters = async (fetchWithAuth: FetchWithAuth, sessio
     const payload: MergeClustersPayload = { action: 'MERGE_CLUSTERS', cluster_ids_to_merge: clusterIds };
     const response = await fetchWithAuth(`/api/clustering/results/${sessionId}/adjust`, {
         method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
     });
     return handleResponse(response);
@@ -163,6 +172,7 @@ export const splitSelectedCluster = async (fetchWithAuth: FetchWithAuth, session
     const payload: SplitClusterPayload = { action: 'SPLIT_CLUSTER', cluster_id_to_split: clusterId, num_splits: numSplits };
     const response = await fetchWithAuth(`/api/clustering/results/${sessionId}/adjust`, {
         method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
     });
     return handleResponse(response);

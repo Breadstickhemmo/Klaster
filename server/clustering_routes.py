@@ -18,7 +18,7 @@ from export import (
     generate_cluster_summary_json,
     generate_session_summary_json,
 )
-from models import db, ClusteringSession, ClusterMetadata
+from models import db, ClusteringSession, ClusterMetadata, ManualAdjustmentLog
 from pipeline import run_clustering_pipeline
 from visualization import generate_and_save_scatter_data
 
@@ -194,7 +194,8 @@ def get_clustering_results(session_id):
         "original_filename": session.original_input_filename if session.original_input_filename else None,
         "clusters": [],
         "scatter_data": None,
-        "scatter_pca_time_sec": None
+        "scatter_pca_time_sec": None,
+        "adjustments": []
     }
 
     is_final_status = session.status in ['SUCCESS', 'RECLUSTERED', 'FAILURE', 'RECLUSTERING_FAILED']
@@ -220,6 +221,19 @@ def get_clustering_results(session_id):
             "centroid_2d": cluster_meta.get_centroid_2d()
         })
     base_response["clusters"] = clusters_data
+
+    try:
+        adjustments = ManualAdjustmentLog.query.filter_by(session_id=session.id)\
+                                                .order_by(ManualAdjustmentLog.timestamp.desc()).all()
+        for adj in adjustments:
+            base_response["adjustments"].append({
+                "timestamp": adj.timestamp.isoformat() + "Z",
+                "action_type": adj.action_type,
+                "details": adj.get_details()
+            })
+        logger.info(f"Загружено {len(base_response['adjustments'])} записей истории для сессии {session_id}")
+    except Exception as adj_err:
+        logger.error(f"Ошибка при загрузке истории изменений для сессии {session_id}: {adj_err}", exc_info=True)
 
     if session.status == 'PROCESSING' and not base_response.get("message"):
          base_response["message"] = "Идет обработка..."
@@ -430,6 +444,7 @@ def adjust_clusters(session_id):
                  db.session.rollback()
                  return jsonify({"error": "Ошибка логирования действия, переименование отменено"}), 500
 
+            db.session.commit()
             logger.info(f"Пользователь {current_user_id} переименовал кластер {cluster_label_str} в сессии {session_id} с '{old_name}' на '{cluster_to_rename.name}'")
             updated_cluster = db.session.get(ClusterMetadata, cluster_to_rename.id)
             return jsonify({
