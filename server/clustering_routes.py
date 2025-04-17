@@ -113,14 +113,24 @@ def get_clustering_results(session_id):
     if not session or session.user_id != int(current_user_id):
         return jsonify({"error": "Сессия кластеризации не найдена или не принадлежит вам"}), 404
 
+    base_response = {
+        "session_id": session.id,
+        "status": session.status,
+        "algorithm": session.algorithm,
+        "params": session.get_params(),
+        "num_clusters": session.num_clusters,
+        "processing_time_sec": session.processing_time_sec,
+        "message": session.result_message,
+        "input_filename": os.path.basename(session.input_file_path) if session.input_file_path else None,
+        "clusters": []
+    }
+
     if session.status != 'SUCCESS' and session.status != 'RECLUSTERED':
-        return jsonify({
-            "session_id": session.id,
-            "status": session.status,
-            "message": session.result_message,
-            "error": "Результаты кластеризации еще не готовы или произошла ошибка.",
-            "clusters": []
-        }), 200
+        if session.status in ['FAILURE', 'RECLUSTERING_FAILED']:
+             base_response["error"] = f"Статус сессии: {session.status}. {session.result_message or ''}"
+        else:
+             base_response["error"] = f"Статус сессии: {session.status}. Результаты еще не готовы."
+        return jsonify(base_response), 200
 
     clusters_data = []
     clusters = session.clusters.filter_by(is_deleted=False).order_by(ClusterMetadata.cluster_label).all()
@@ -139,16 +149,10 @@ def get_clustering_results(session_id):
             "metrics": cluster_meta.get_metrics()
         })
 
-    response = {
-        "session_id": session.id,
-        "status": session.status,
-        "algorithm": session.algorithm,
-        "params": session.get_params(),
-        "num_clusters": session.num_clusters,
-        "processing_time_sec": session.processing_time_sec,
-        "clusters": clusters_data,
-    }
-    return jsonify(response), 200
+    base_response["clusters"] = clusters_data
+    base_response["num_clusters"] = len(clusters_data)
+
+    return jsonify(base_response), 200
 
 @clustering_bp.route('/contact_sheet/<session_id>/<filename>', methods=['GET'])
 @jwt_required()
@@ -276,5 +280,4 @@ def adjust_clusters(session_id):
 
 
 def register_clustering_routes(app):
-    """Регистрирует Blueprint в Flask приложении."""
     app.register_blueprint(clustering_bp)

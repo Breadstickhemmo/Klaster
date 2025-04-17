@@ -17,15 +17,25 @@ const ContactSheet: React.FC<ContactSheetProps> = ({
   isDeleting
 }) => {
   return (
-    <div className="contact-sheet-card">
+    <div className={`contact-sheet-card ${isDeleting ? 'is-deleting' : ''}`}>
       <h4>Кластер {clusterId}</h4>
-      <img src={imageUrl} alt={`Контактный отпечаток для кластера ${clusterId}`} className="contact-sheet-image" />
+      <img
+        src={imageUrl}
+        alt={`Контактный отпечаток для кластера ${clusterId}`}
+        className="contact-sheet-image"
+        onError={(e) => {
+            const target = e.target as HTMLImageElement;
+            target.onerror = null;
+            target.src = 'https://placehold.co/300x200/EEE/31343C?text=Error+Loading';
+            console.warn(`Failed to load contact sheet image: ${imageUrl}`);
+        }}
+       />
       <p>Размер: {clusterSize} изображений</p>
       <button
         className="secondary-btn delete-sheet-btn"
         onClick={() => onDelete(clusterId)}
         disabled={isDeleting}
-        title="Удалить контактный отпечаток и рекластеризовать"
+        title={isDeleting ? "Выполняется операция..." : "Удалить контактный отпечаток и рекластеризовать"}
         aria-label={`Удалить контактный отпечаток кластера ${clusterId}`}
       >
         {isDeleting ? 'Удаление...' : 'Удалить отпечаток'}

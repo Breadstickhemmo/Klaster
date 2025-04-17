@@ -37,9 +37,6 @@ def load_embeddings(file_path):
         image_ids = df['id'].astype(str).tolist() if 'id' in df.columns else [str(i) for i in df.index.tolist()]
         image_paths = df['image_path'].tolist() if 'image_path' in df.columns else None
 
-        if embeddings.ndim != 2 or embeddings.shape[1] != 768:
-             raise ValueError(f"Некорректная размерность эмбеддингов: {embeddings.shape}. Ожидалось (?, 768)")
-
         logger.info(f"Загружено {embeddings.shape[0]} эмбеддингов из {file_path}")
         return embeddings, image_ids, image_paths
 

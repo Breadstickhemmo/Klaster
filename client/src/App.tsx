@@ -39,7 +39,9 @@ const App = () => {
 
     const fetchWithAuth = useCallback(async (url: string, options: RequestInit = {}) => {
         const headers = new Headers(options.headers || {});
-        headers.set('Content-Type', 'application/json');
+        if (!(options.body instanceof FormData)) {
+             headers.set('Content-Type', 'application/json');
+        }
 
         if (authToken) {
             headers.set('Authorization', `Bearer ${authToken}`);
@@ -57,7 +59,6 @@ const App = () => {
                  handleLogout();
                  toast.error('Сессия истекла или недействительна. Пожалуйста, войдите снова.');
             }
-            throw new Error('Unauthorized or Session Expired');
         }
 
         return response;
@@ -73,10 +74,15 @@ const App = () => {
     }, []);
 
     useEffect(() => {
-        if (authToken && !isAuthenticated) {
+        if (authToken && !isAuthenticated && !authLoading) {
             setAuthLoading(true);
             fetchWithAuth('/api/me')
                 .then(async response => {
+                    if (response.status === 401) {
+                        console.warn("Token validation returned 401.");
+                        handleLogout();
+                        return null;
+                    }
                     if (!response.ok) {
                          const errorData = await response.json().catch(() => ({}));
                          console.error("Error response from /api/me:", response.status, errorData);
@@ -89,16 +95,16 @@ const App = () => {
                         setCurrentUser(data.user);
                         setIsAuthenticated(true);
                         console.log("User authenticated via token:", data.user);
-                    } else {
+                    } else if (data !== null) {
                          handleLogout();
-                         console.warn("/api/me responded OK but data was invalid.");
+                         console.warn("/api/me responded OK but data was invalid or null after 401 handling.");
                     }
                 })
                 .catch((err) => {
-                     if (!(err.message && err.message.includes('Unauthorized or Session Expired'))) {
-                         console.error("Error validating token or fetching user data:", err);
-                         handleLogout();
+                     if (!(err.message && err.message.includes('Ошибка проверки токена: 401'))) {
+                       console.error("Error validating token or fetching user data:", err);
                      }
+                     handleLogout();
                 })
                 .finally(() => {
                     setAuthLoading(false);
@@ -108,7 +114,8 @@ const App = () => {
              setAuthLoading(false);
         }
 
-    }, [authToken, fetchWithAuth, handleLogout, isAuthenticated]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [authToken, isAuthenticated]);
 
     const handleRegister = async (formData: AuthFormData) => {
         const response = await fetch('/api/register', {
@@ -140,6 +147,8 @@ const App = () => {
         }
         localStorage.setItem('authToken', data.access_token);
         setAuthToken(data.access_token);
+        setIsAuthenticated(false);
+        setAuthLoading(true);
         setIsLoginOpen(false);
         toast.success(`Добро пожаловать, ${data.user.username}!`);
     };
@@ -184,7 +193,7 @@ const App = () => {
                  </p>
               </div>
           ) : (
-              <ClusteringDashboard />
+              <ClusteringDashboard fetchWithAuth={fetchWithAuth} />
           )}
 
             <AuthModal
