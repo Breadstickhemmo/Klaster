@@ -8,6 +8,7 @@ interface ContactSheetsGridProps {
     clusters: ClusterResult[];
     sessionId: string | null;
     onRedistribute: (clusterId: string | number) => void;
+    onRename: (clusterId: string | number, newName: string) => Promise<boolean>; // Добавляем проп
     isDeletingId: string | number | null;
     disabled: boolean;
     status: string;
@@ -15,7 +16,9 @@ interface ContactSheetsGridProps {
 
 const ContactSheetsGrid: React.FC<ContactSheetsGridProps> = ({
     clusters,
+    sessionId,
     onRedistribute,
+    onRename, // Принимаем новый проп
     isDeletingId,
     disabled,
     status
@@ -59,7 +62,9 @@ const ContactSheetsGrid: React.FC<ContactSheetsGridProps> = ({
                         clusterId={cluster.id}
                         imageUrl={cluster.contactSheetUrl}
                         clusterSize={cluster.size}
+                        initialName={cluster.name} // Передаем начальное имя
                         onRedistribute={onRedistribute}
+                        onRename={onRename} // Передаем обработчик переименования
                         isProcessing={isDeletingId === cluster.id || disabled}
                     />
                 ))}

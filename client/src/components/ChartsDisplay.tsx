@@ -12,9 +12,12 @@ interface ChartsDisplayProps {
 type ScatterDataType = ScatterPoint[] | { error: string } | { message: string } | null | undefined;
 
 const generateColor = (index: number, total: number, saturation = 70, lightness = 60): string => {
-  const hue = (index * (360 / Math.max(total, 1))) % 360;
+  const validIndex = Math.max(0, isNaN(index) ? 0 : index);
+  const validTotal = Math.max(1, isNaN(total) ? 1 : total);
+  const hue = (validIndex * (360 / validTotal)) % 360;
   return `hsl(${hue}, ${saturation}%, ${lightness}%)`;
 };
+
 
 const OUTLIER_COLOR = 'rgba(150, 150, 150, 0.5)';
 
@@ -44,24 +47,56 @@ const ChartsDisplay: React.FC<ChartsDisplayProps> = ({ details, sessionId }) => 
              if (details?.status !== 'PROCESSING') { return result; }
         }
 
+        const clustersMap = new Map<string | number, ClusterResult>();
+        details.clusters?.forEach(c => clustersMap.set(c.id, c));
+
         if (details.clusters && details.clusters.length > 0) {
             const sortedClustersForBar = sortClustersNumerically<ClusterResult>(details.clusters);
-            const barLabels = sortedClustersForBar.map(c => `Кластер ${c.id}`);
+            const barLabels = sortedClustersForBar.map(c => c.name || `Кластер ${c.id}`);
             const barDataPoints = sortedClustersForBar.map(c => c.size);
-            result.barChartData = { labels: barLabels, datasets: [{ label: 'Размер кластера (кол-во изображений)', data: barDataPoints, backgroundColor: 'rgba(0, 123, 255, 0.6)', borderColor: 'rgba(0, 123, 255, 1)', borderWidth: 1, }], };
+            result.barChartData = {
+                labels: barLabels,
+                datasets: [{
+                    label: 'Размер кластера (кол-во изображений)',
+                    data: barDataPoints,
+                    backgroundColor: 'rgba(0, 123, 255, 0.6)',
+                    borderColor: 'rgba(0, 123, 255, 1)',
+                    borderWidth: 1,
+                }],
+             };
         }
 
         const clustersWith2dCentroids = details.clusters?.filter(c => c.centroid_2d && c.centroid_2d.length === 2) || [];
         if (clustersWith2dCentroids.length > 0) {
             const sortedCentroids = sortClustersNumerically<ClusterResult>(clustersWith2dCentroids);
+
+            let maxCentroidIdNum = -1;
+            sortedCentroids.forEach(c => {
+                const numId = parseInt(String(c.id), 10);
+                if (!isNaN(numId)) {
+                    maxCentroidIdNum = Math.max(maxCentroidIdNum, numId);
+                }
+            });
+            const numCentroidColors = Math.max(1, maxCentroidIdNum + 1, sortedCentroids.length);
+
             result.centroidChartData = {
-                datasets: sortedCentroids.map((cluster, index) => ({
-                    label: `Центр ${cluster.id}`,
-                    data: [{ x: cluster.centroid_2d![0], y: cluster.centroid_2d![1] }],
-                    backgroundColor: generateColor(index, sortedCentroids.length),
-                    pointRadius: 6,
-                    pointHoverRadius: 8,
-                })),
+                datasets: sortedCentroids.map((cluster, index) => {
+                    let clusterIndexForColor = -1;
+                    const numId = parseInt(String(cluster.id), 10);
+                    if (!isNaN(numId)) {
+                        clusterIndexForColor = numId;
+                    } else {
+                        clusterIndexForColor = index;
+                    }
+
+                    return {
+                        label: cluster.name || `Центр ${cluster.id}`,
+                        data: [{ x: cluster.centroid_2d![0], y: cluster.centroid_2d![1] }],
+                        backgroundColor: generateColor(clusterIndexForColor, numCentroidColors),
+                        pointRadius: 6,
+                        pointHoverRadius: 8,
+                    };
+                }),
             };
         }
 
@@ -73,37 +108,59 @@ const ChartsDisplay: React.FC<ChartsDisplayProps> = ({ details, sessionId }) => 
                 if (points.length === 0) {
                      result.scatterMessage = "Нет данных для отображения на графике рассеяния.";
                 } else {
-                    const clustersPresent = Array.from(new Set(points.map(p => p.cluster))).sort((a, b) => {
-                         const numA = parseInt(a); const numB = parseInt(b);
+                    const clustersPresentInScatter = Array.from(new Set(points.map(p => p.cluster))).sort((a, b) => {
+                         const numA = parseInt(a, 10); const numB = parseInt(b, 10);
                          if (a === '-1') return -1;
                          if (b === '-1') return 1;
                          if (!isNaN(numA) && !isNaN(numB)) return numA - numB;
                          return a.localeCompare(b);
                     });
 
-                    const maxClusterNum = clustersPresent.reduce((max, id) => {
-                        if (id === '-1') return max;
-                        const numId = parseInt(id);
-                        return !isNaN(numId) ? Math.max(max, numId) : max;
-                     }, -1);
-                    const numColorsNeeded = Math.max(maxClusterNum + 1, clustersPresent.filter(id => id !== '-1').length);
+                    let maxScatterIdNum = -1;
+                    clustersPresentInScatter.forEach(id => {
+                         if (id === '-1') return;
+                         const numId = parseInt(id, 10);
+                         if (!isNaN(numId)) {
+                             maxScatterIdNum = Math.max(maxScatterIdNum, numId);
+                         }
+                     });
+                     const numScatterColors = Math.max(1, maxScatterIdNum + 1, clustersPresentInScatter.filter(id => id !== '-1').length);
 
                     result.scatterChartData = {
-                        datasets: clustersPresent.map((clusterId) => {
+                        datasets: clustersPresentInScatter.map((clusterIdStr, index) => {
                             const clusterPoints = points
-                                .filter(p => p.cluster === clusterId)
+                                .filter(p => p.cluster === clusterIdStr)
                                 .map(p => ({ x: p.x, y: p.y }));
 
-                            const isOutlier = clusterId === '-1';
-                            let clusterIndex = -1;
+                            const isOutlier = clusterIdStr === '-1';
+                            let clusterMeta: ClusterResult | undefined;
                             if (!isOutlier) {
-                                try { clusterIndex = parseInt(clusterId); } catch { clusterIndex = -1; }
+                                const numId = parseInt(clusterIdStr, 10);
+                                if (!isNaN(numId)) {
+                                    clusterMeta = clustersMap.get(numId);
+                                }
+                                if (!clusterMeta) {
+                                    clusterMeta = clustersMap.get(clusterIdStr);
+                                }
+                            } else {
+                                clusterMeta = clustersMap.get("-1") ?? clustersMap.get(-1);
+                            }
+                            const clusterName = clusterMeta?.name;
+
+                            let clusterIndexForColor = -1;
+                            if (!isOutlier) {
+                                const numId = parseInt(clusterIdStr, 10);
+                                if (!isNaN(numId)) {
+                                    clusterIndexForColor = numId;
+                                } else {
+                                     clusterIndexForColor = index;
+                                }
                             }
 
                             return {
-                                label: isOutlier ? 'Шум (-1)' : `Кластер ${clusterId}`,
+                                label: isOutlier ? 'Шум (-1)' : (clusterName || `Кластер ${clusterIdStr}`),
                                 data: clusterPoints,
-                                backgroundColor: isOutlier ? OUTLIER_COLOR : generateColor(clusterIndex, numColorsNeeded, 60, 70),
+                                backgroundColor: isOutlier ? OUTLIER_COLOR : generateColor(clusterIndexForColor, numScatterColors, 60, 70),
                                 pointRadius: 2.5,
                                 pointHoverRadius: 4,
                                 showLine: false,
@@ -147,13 +204,16 @@ const ChartsDisplay: React.FC<ChartsDisplayProps> = ({ details, sessionId }) => 
                              label += `${context.parsed.y} изображений`;
                         }
                         return label;
+                    },
+                    title: function(context) {
+                        return context[0]?.label || '';
                     }
                 }
             }
         },
         scales: {
             y: { beginAtZero: true, title: { display: true, text: 'Количество изображений' } },
-            x: { title: { display: true, text: 'Номер кластера' } }
+            x: { title: { display: true, text: 'Кластер' } }
         },
     }), []);
 
@@ -220,11 +280,11 @@ const ChartsDisplay: React.FC<ChartsDisplayProps> = ({ details, sessionId }) => 
         if (scatterMessage) return scatterMessage;
         if (scatterError) return `Ошибка: ${scatterError}`;
 
-        const dataArray = Array.isArray(details.scatter_data) ? details.scatter_data : null;
+        const dataArray = Array.isArray(details?.scatter_data) ? details.scatter_data : null;
         const pointCount = dataArray ? dataArray.length : 'N/A';
         let desc = `Визуализация сэмпла изображений (${pointCount} точек) в 2D пространстве после PCA, окрашенных по кластерам.`;
         desc += " Используйте колесо мыши/жесты для зума/перемещения.";
-        if (details.scatter_pca_time_sec !== null && details.scatter_pca_time_sec !== undefined) {
+        if (details?.scatter_pca_time_sec !== null && details?.scatter_pca_time_sec !== undefined) {
             desc += ` Время расчета PCA: ${details.scatter_pca_time_sec.toFixed(2)} сек.`;
         }
         return desc;

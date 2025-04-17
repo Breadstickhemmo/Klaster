@@ -10,6 +10,7 @@ import {
     getClusteringSessions,
     getClusteringResults,
     deleteAndRedistributeCluster,
+    renameCluster,
     SessionResultResponse,
     SessionListItem,
     StartClusteringPayload
@@ -33,6 +34,7 @@ const ClusteringDashboard: React.FC<ClusteringDashboardProps> = ({ fetchWithAuth
   const [isFetchingResults, setIsFetchingResults] = useState<boolean>(false);
   const [isDeletingId, setIsDeletingId] = useState<string | number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [isRenamingId, setIsRenamingId] = useState<string | number | null>(null);
 
   const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -58,7 +60,7 @@ const ClusteringDashboard: React.FC<ClusteringDashboardProps> = ({ fetchWithAuth
 
       setSessions(prevSessions =>
           prevSessions.map(s =>
-              s.session_id === sessionId && s.status !== resultsData.status
+              s.session_id === sessionId && (s.status !== resultsData.status || s.result_message !== resultsData.message)
                   ? { ...s, status: resultsData.status, result_message: resultsData.message || s.result_message }
                   : s
           )
@@ -141,7 +143,6 @@ const ClusteringDashboard: React.FC<ClusteringDashboardProps> = ({ fetchWithAuth
     }
   }, [currentSessionId, fetchSessionResults, startPolling, stopPolling]);
 
-
   const handleSelectSession = useCallback((sessionId: string) => {
       if (sessionId !== currentSessionId) {
           setCurrentSessionId(sessionId);
@@ -211,7 +212,6 @@ const ClusteringDashboard: React.FC<ClusteringDashboardProps> = ({ fetchWithAuth
              return prevDetails;
          });
 
-
     } catch (err: any) {
         console.error(`Error deleting/redistributing cluster ${labelToDelete}:`, err);
         const errorMsg = err.message || `Не удалось удалить/перераспределить кластер ${labelToDelete}.`;
@@ -224,7 +224,35 @@ const ClusteringDashboard: React.FC<ClusteringDashboardProps> = ({ fetchWithAuth
     }
   }, [currentSessionId, fetchWithAuth, stopPolling, fetchSessionResults, startPolling]);
 
-  const isProcessing = isLoading || isDeletingId !== null;
+  const handleRenameCluster = useCallback(async (clusterId: string | number, newName: string): Promise<boolean> => {
+    if (!currentSessionId) {
+        toast.error("Нет активной сессии для переименования.");
+        return false;
+    }
+
+    setIsRenamingId(clusterId);
+    setIsLoading(true);
+    let success = false;
+
+    try {
+        await renameCluster(fetchWithAuth, currentSessionId, clusterId, newName);
+        await fetchSessionResults(currentSessionId);
+        success = true;
+
+    } catch (err: any) {
+        console.error(`Error renaming cluster ${clusterId}:`, err);
+        const errorMsg = err.message || `Не удалось переименовать кластер ${clusterId}.`;
+        setError(errorMsg);
+        toast.error(errorMsg);
+        success = false;
+    } finally {
+        setIsRenamingId(null);
+        setIsLoading(false);
+    }
+    return success;
+  }, [currentSessionId, fetchWithAuth, fetchSessionResults]);
+
+  const isProcessing = isLoading || isDeletingId !== null || isRenamingId !== null;
   const isCurrentSessionLoading = isFetchingResults && !pollingIntervalRef.current;
 
   return (
@@ -269,6 +297,7 @@ const ClusteringDashboard: React.FC<ClusteringDashboardProps> = ({ fetchWithAuth
                     clusters={currentSessionDetails.clusters || []}
                     sessionId={currentSessionId}
                     onRedistribute={handleDeleteAndRedistributeCluster}
+                    onRename={handleRenameCluster}
                     isDeletingId={isDeletingId}
                     disabled={isProcessing || !['SUCCESS', 'RECLUSTERED'].includes(currentSessionDetails.status)}
                     status={currentSessionDetails.status}
