@@ -88,7 +88,7 @@ export const getClusteringResults = async (fetchWithAuth: FetchWithAuth, session
     return results;
 };
 
-export const deleteClusterAndRecluster = async (fetchWithAuth: FetchWithAuth, sessionId: string, clusterLabel: string | number): Promise<{ message: string; new_session_id: string }> => {
+export const deleteAndRedistributeCluster = async (fetchWithAuth: FetchWithAuth, sessionId: string, clusterLabel: string | number): Promise<{ message: string }> => {
     const response = await fetchWithAuth(`/api/clustering/results/${sessionId}/cluster/${clusterLabel}`, { method: 'DELETE' });
     return handleResponse(response);
 };

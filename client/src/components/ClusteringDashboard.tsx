@@ -9,7 +9,7 @@ import {
     startClustering,
     getClusteringSessions,
     getClusteringResults,
-    deleteClusterAndRecluster,
+    deleteAndRedistributeCluster,
     SessionResultResponse,
     SessionListItem,
     StartClusteringPayload
@@ -174,28 +174,55 @@ const ClusteringDashboard: React.FC<ClusteringDashboardProps> = ({ fetchWithAuth
     }
   }, [fetchWithAuth, stopPolling]);
 
-   const handleDeleteClusterAndRecluster = useCallback(async (clusterLabel: string | number) => {
+   const handleDeleteAndRedistributeCluster = useCallback(async (clusterLabel: string | number) => {
     if (!currentSessionId) { toast.error("Нет активной сессии для выполнения операции."); return; }
+
     const labelToDelete = String(clusterLabel);
-    setIsDeletingId(clusterLabel); setIsLoading(true); setError(null); stopPolling();
-    toast.info(`Удаляем кластер ${labelToDelete} и запускаем рекластеризацию...`);
+    const confirmed = window.confirm(`Вы уверены, что хотите удалить кластер ${labelToDelete} и перераспределить его точки по ближайшим оставшимся кластерам? Это действие необратимо для текущей сессии.`);
+    if (!confirmed) {
+        return;
+    }
+
+    setIsDeletingId(clusterLabel);
+    setIsLoading(true);
+    setError(null);
+    stopPolling();
+
+    toast.info(`Удаляем кластер ${labelToDelete} и перераспределяем его точки...`);
+
     try {
-        const response = await deleteClusterAndRecluster(fetchWithAuth, currentSessionId, labelToDelete);
-        toast.success(`Кластер ${labelToDelete} удален. Создана новая сессия: ${response.new_session_id}`);
-        const originalSession = sessions.find(s => s.session_id === currentSessionId);
-        const newSessionItem: SessionListItem = {
-            session_id: response.new_session_id, created_at: new Date().toISOString(), status: 'STARTED',
-            algorithm: originalSession?.algorithm || '', params: originalSession?.params || {}, num_clusters: null,
-            result_message: "Рекластеризация...", original_filename: originalSession?.original_filename || null
-        };
-        setSessions(prev => [newSessionItem, ...prev.map(s => s.session_id === currentSessionId ? { ...s, status: 'RECLUSTERED' } : s )]);
-        setCurrentSessionId(response.new_session_id);
+        const response = await deleteAndRedistributeCluster(fetchWithAuth, currentSessionId, labelToDelete);
+        toast.success(response.message || `Кластер ${labelToDelete} удален, точки перераспределены.`);
+
+        await fetchSessionResults(currentSessionId);
+
+        setSessions(prevSessions =>
+            prevSessions.map(s =>
+                s.session_id === currentSessionId
+                    ? { ...s, result_message: response.message || s.result_message }
+                    : s
+            )
+        );
+
+        setCurrentSessionDetails(prevDetails => {
+             if (prevDetails && prevDetails.session_id === currentSessionId && !FINAL_STATUSES.includes(prevDetails.status)) {
+                  startPolling(currentSessionId);
+             }
+             return prevDetails;
+         });
+
+
     } catch (err: any) {
-        console.error(`Error deleting/re-clustering cluster ${labelToDelete}:`, err);
-        const errorMsg = err.message || `Не удалось удалить кластер ${labelToDelete}.`;
-        setError(errorMsg); toast.error(errorMsg);
-    } finally { setIsDeletingId(null); setIsLoading(false); }
-  }, [currentSessionId, fetchWithAuth, sessions, stopPolling]);
+        console.error(`Error deleting/redistributing cluster ${labelToDelete}:`, err);
+        const errorMsg = err.message || `Не удалось удалить/перераспределить кластер ${labelToDelete}.`;
+        setError(errorMsg);
+        toast.error(errorMsg);
+        fetchSessionResults(currentSessionId);
+    } finally {
+        setIsDeletingId(null);
+        setIsLoading(false);
+    }
+  }, [currentSessionId, fetchWithAuth, stopPolling, fetchSessionResults, startPolling]);
 
   const isProcessing = isLoading || isDeletingId !== null;
   const isCurrentSessionLoading = isFetchingResults && !pollingIntervalRef.current;
@@ -241,9 +268,9 @@ const ClusteringDashboard: React.FC<ClusteringDashboardProps> = ({ fetchWithAuth
                   <ContactSheetsGrid
                     clusters={currentSessionDetails.clusters || []}
                     sessionId={currentSessionId}
-                    onDelete={handleDeleteClusterAndRecluster}
+                    onRedistribute={handleDeleteAndRedistributeCluster}
                     isDeletingId={isDeletingId}
-                    disabled={isProcessing || !FINAL_STATUSES.includes(currentSessionDetails.status)}
+                    disabled={isProcessing || !['SUCCESS', 'RECLUSTERED'].includes(currentSessionDetails.status)}
                     status={currentSessionDetails.status}
                   />
               )}

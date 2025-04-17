@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import { SessionResultResponse, ClusterResult } from '../services/api';
+import { SessionResultResponse, ClusterResult, ScatterPoint } from '../services/api';
 import { Bar, Scatter } from 'react-chartjs-2';
 import { ChartOptions, ChartData } from 'chart.js';
 import '../styles/ChartsDisplay.css';
@@ -8,6 +8,8 @@ interface ChartsDisplayProps {
     details: SessionResultResponse | null;
     sessionId: string | null;
 }
+
+type ScatterDataType = ScatterPoint[] | { error: string } | { message: string } | null | undefined;
 
 const generateColor = (index: number, total: number, saturation = 70, lightness = 60): string => {
   const hue = (index * (360 / Math.max(total, 1))) % 360;
@@ -29,13 +31,14 @@ const sortClustersNumerically = <T extends { id: string | number }>(clusters: T[
 
 const ChartsDisplay: React.FC<ChartsDisplayProps> = ({ details, sessionId }) => {
 
-    const { barChartData, centroidChartData, scatterChartData, scatterError } = useMemo(() => {
+    const { barChartData, centroidChartData, scatterChartData, scatterMessage, scatterError } = useMemo(() => {
         const result: {
             barChartData: ChartData<'bar'> | null;
             centroidChartData: ChartData<'scatter'> | null;
             scatterChartData: ChartData<'scatter'> | null;
+            scatterMessage: string | null;
             scatterError: string | null;
-        } = { barChartData: null, centroidChartData: null, scatterChartData: null, scatterError: null };
+        } = { barChartData: null, centroidChartData: null, scatterChartData: null, scatterMessage: null, scatterError: null };
 
         if (!details || (details.status !== 'SUCCESS' && details.status !== 'RECLUSTERED' && details.status !== 'PROCESSING')) {
              if (details?.status !== 'PROCESSING') { return result; }
@@ -62,56 +65,119 @@ const ChartsDisplay: React.FC<ChartsDisplayProps> = ({ details, sessionId }) => 
             };
         }
 
-        if (details.scatter_data) {
-            if (Array.isArray(details.scatter_data)) {
-                const points = details.scatter_data;
-                const clustersPresent = Array.from(new Set(points.map(p => p.cluster))).sort((a, b) => {
-                     const numA = parseInt(a); const numB = parseInt(b);
-                     if (a === '-1') return -1;
-                     if (b === '-1') return 1;
-                     if (!isNaN(numA) && !isNaN(numB)) return numA - numB;
-                     return a.localeCompare(b);
-                });
+        const scatterDataRaw: ScatterDataType = details.scatter_data;
 
-                const maxClusterNum = clustersPresent.reduce((max, id) => {
-                    if (id === '-1') return max;
-                    const numId = parseInt(id);
-                    return !isNaN(numId) ? Math.max(max, numId) : max;
-                 }, -1);
-                const numColorsNeeded = maxClusterNum + 1;
+        if (scatterDataRaw) {
+            if (Array.isArray(scatterDataRaw)) {
+                const points = scatterDataRaw;
+                if (points.length === 0) {
+                     result.scatterMessage = "Нет данных для отображения на графике рассеяния.";
+                } else {
+                    const clustersPresent = Array.from(new Set(points.map(p => p.cluster))).sort((a, b) => {
+                         const numA = parseInt(a); const numB = parseInt(b);
+                         if (a === '-1') return -1;
+                         if (b === '-1') return 1;
+                         if (!isNaN(numA) && !isNaN(numB)) return numA - numB;
+                         return a.localeCompare(b);
+                    });
 
-                result.scatterChartData = {
-                    datasets: clustersPresent.map((clusterId) => {
-                        const clusterPoints = points
-                            .filter(p => p.cluster === clusterId)
-                            .map(p => ({ x: p.x, y: p.y }));
+                    const maxClusterNum = clustersPresent.reduce((max, id) => {
+                        if (id === '-1') return max;
+                        const numId = parseInt(id);
+                        return !isNaN(numId) ? Math.max(max, numId) : max;
+                     }, -1);
+                    const numColorsNeeded = Math.max(maxClusterNum + 1, clustersPresent.filter(id => id !== '-1').length);
 
-                        const isOutlier = clusterId === '-1';
-                        const clusterIndex = isOutlier ? -1 : parseInt(clusterId);
+                    result.scatterChartData = {
+                        datasets: clustersPresent.map((clusterId) => {
+                            const clusterPoints = points
+                                .filter(p => p.cluster === clusterId)
+                                .map(p => ({ x: p.x, y: p.y }));
 
-                        return {
-                            label: isOutlier ? 'Выбросы (-1)' : `Кластер ${clusterId}`,
-                            data: clusterPoints,
-                            backgroundColor: isOutlier ? OUTLIER_COLOR : generateColor(clusterIndex, numColorsNeeded, 60, 70),
-                            pointRadius: 2.5,
-                            pointHoverRadius: 4,
-                            showLine: false,
-                            borderColor: 'transparent'
-                        };
-                    }),
-                };
-            } else if (details.scatter_data.error) {
-                result.scatterError = details.scatter_data.error;
+                            const isOutlier = clusterId === '-1';
+                            let clusterIndex = -1;
+                            if (!isOutlier) {
+                                try { clusterIndex = parseInt(clusterId); } catch { clusterIndex = -1; }
+                            }
+
+                            return {
+                                label: isOutlier ? 'Шум (-1)' : `Кластер ${clusterId}`,
+                                data: clusterPoints,
+                                backgroundColor: isOutlier ? OUTLIER_COLOR : generateColor(clusterIndex, numColorsNeeded, 60, 70),
+                                pointRadius: 2.5,
+                                pointHoverRadius: 4,
+                                showLine: false,
+                                borderColor: 'transparent'
+                            };
+                        }),
+                    };
+                }
+            } else if (typeof scatterDataRaw === 'object' && scatterDataRaw !== null && 'error' in scatterDataRaw && typeof scatterDataRaw.error === 'string' && scatterDataRaw.error.length > 0) {
+                result.scatterError = scatterDataRaw.error;
+            } else if (typeof scatterDataRaw === 'object' && scatterDataRaw !== null && 'message' in scatterDataRaw && typeof scatterDataRaw.message === 'string' && scatterDataRaw.message.length > 0) {
+                result.scatterMessage = scatterDataRaw.message;
+            } else if (typeof scatterDataRaw === 'object' && scatterDataRaw !== null && Object.keys(scatterDataRaw).length === 0) {
+                 console.warn("Получены пустые объектные данные для scatter_data:", scatterDataRaw);
+                 result.scatterError = "Получены некорректные пустые данные для графика.";
+            } else {
+                 console.warn("Получен неожиданный формат для scatter_data:", scatterDataRaw);
+                 result.scatterError = "Получен неизвестный формат данных для графика.";
             }
         } else if (details.status === 'SUCCESS' || details.status === 'RECLUSTERED') {
-             result.scatterError = "Данные для графика рассеяния не были сгенерированы.";
+             result.scatterError = "Данные для графика рассеяния не были сгенерированы или отсутствуют.";
+        } else if (details.status === 'PROCESSING'){
+             result.scatterMessage = "Генерация данных...";
         }
 
         return result;
     }, [details]);
 
-    const barChartOptions = useMemo((): ChartOptions<'bar'> => ({ responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'top' as const, }, title: { display: true, text: `Распределение размеров кластеров (${details?.algorithm?.toUpperCase() || 'N/A'})`, font: { size: 16 } }, tooltip: { callbacks: { label: function(context) { let label = context.dataset.label || ''; if (label) { label += ': '; } if (context.parsed.y !== null) { label += `${context.parsed.y} изображений`; } return label; } } } }, scales: { y: { beginAtZero: true, title: { display: true, text: 'Количество изображений' } }, x: { title: { display: true, text: 'Номер кластера' } } }, }), [details?.algorithm]);
-    const centroidChartOptions = useMemo((): ChartOptions<'scatter'> => ({ responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'right' as const, display: (details?.clusters?.length ?? 0) <= 20, }, title: { display: true, text: 'Центроиды кластеров (PCA)', font: { size: 16 } }, tooltip: { callbacks: { label: function(context) { const label = context.dataset.label || ''; const point = context.parsed; return `${label}: (x: ${point.x.toFixed(2)}, y: ${point.y.toFixed(2)})`; } } } }, scales: { x: { type: 'linear', position: 'bottom', title: { display: true, text: 'Компонента PCA 1' } }, y: { type: 'linear', title: { display: true, text: 'Компонента PCA 2' } } }, }), [details?.clusters]);
+    const barChartOptions = useMemo((): ChartOptions<'bar'> => ({
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+            legend: { position: 'top' as const },
+            title: { display: false },
+            tooltip: {
+                callbacks: {
+                    label: function(context) {
+                        let label = context.dataset.label || '';
+                        if (label) { label += ': '; }
+                        if (context.parsed.y !== null) {
+                             label += `${context.parsed.y} изображений`;
+                        }
+                        return label;
+                    }
+                }
+            }
+        },
+        scales: {
+            y: { beginAtZero: true, title: { display: true, text: 'Количество изображений' } },
+            x: { title: { display: true, text: 'Номер кластера' } }
+        },
+    }), []);
+
+    const centroidChartOptions = useMemo((): ChartOptions<'scatter'> => ({
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+            legend: { position: 'right' as const, display: (details?.clusters?.length ?? 0) <= 20 },
+            title: { display: false },
+            tooltip: {
+                callbacks: {
+                    label: function(context) {
+                        const label = context.dataset.label || '';
+                        const point = context.parsed;
+                        return `${label}: (x: ${point.x.toFixed(2)}, y: ${point.y.toFixed(2)})`;
+                    }
+                }
+            }
+        },
+        scales: {
+            x: { type: 'linear', position: 'bottom', title: { display: true, text: 'Компонента PCA 1' } },
+            y: { type: 'linear', title: { display: true, text: 'Компонента PCA 2' } }
+        },
+    }), [details?.clusters]);
 
     const scatterChartOptions = useMemo((): ChartOptions<'scatter'> => ({
         responsive: true,
@@ -121,11 +187,7 @@ const ChartsDisplay: React.FC<ChartsDisplayProps> = ({ details, sessionId }) => 
                 position: 'right' as const,
                 display: (scatterChartData?.datasets?.length ?? 0) <= 15,
             },
-            title: {
-                display: true,
-                text: 'График рассеяния изображений (PCA)',
-                font: { size: 16 }
-            },
+            title: { display: false },
             tooltip: {
                  callbacks: {
                     label: function(context) {
@@ -155,6 +217,9 @@ const ChartsDisplay: React.FC<ChartsDisplayProps> = ({ details, sessionId }) => 
         if (!details) {
             return "Описание графика недоступно.";
         }
+        if (scatterMessage) return scatterMessage;
+        if (scatterError) return `Ошибка: ${scatterError}`;
+
         const dataArray = Array.isArray(details.scatter_data) ? details.scatter_data : null;
         const pointCount = dataArray ? dataArray.length : 'N/A';
         let desc = `Визуализация сэмпла изображений (${pointCount} точек) в 2D пространстве после PCA, окрашенных по кластерам.`;
@@ -163,13 +228,11 @@ const ChartsDisplay: React.FC<ChartsDisplayProps> = ({ details, sessionId }) => 
             desc += ` Время расчета PCA: ${details.scatter_pca_time_sec.toFixed(2)} сек.`;
         }
         return desc;
-    }, [details]);
-
+    }, [details, scatterMessage, scatterError]);
 
     if (!details || (details.status !== 'SUCCESS' && details.status !== 'RECLUSTERED' && details.status !== 'PROCESSING')) {
         return null;
     }
-
 
     const chartKeyBase = sessionId || 'no-session';
 
@@ -181,14 +244,14 @@ const ChartsDisplay: React.FC<ChartsDisplayProps> = ({ details, sessionId }) => 
                 <div className='chart-wrapper' style={{marginBottom: '2rem'}}>
                     <h4>Распределение размеров кластеров</h4>
                     {barChartData ? ( <div className="chart-container" style={{ height: '350px' }}> <Bar key={`${chartKeyBase}-bar`} options={barChartOptions} data={barChartData} /> </div> )
-                    : (<p className='chart-placeholder-text'>Нет данных для графика.</p>)
+                    : (<p className='chart-placeholder-text'>Нет данных для графика размеров.</p>)
                     }
                 </div>
 
                 <div className='chart-wrapper' style={{marginBottom: '2rem'}}>
                     <h4>График центроидов (PCA)</h4>
                     {centroidChartData ? ( <div className="chart-container" style={{ height: '400px' }}> <Scatter key={`${chartKeyBase}-centroid-scatter`} options={centroidChartOptions} data={centroidChartData} /> </div> )
-                    : ( details.status === 'PROCESSING' ? <p className='chart-placeholder-text'>Расчет 2D координат...</p> : <p className='chart-placeholder-text'>Нет данных 2D центроидов.</p> )
+                    : ( details.status === 'PROCESSING' ? <p className='chart-placeholder-text'>Расчет 2D координат...</p> : <p className='chart-placeholder-text'>Нет активных кластеров для графика центроидов.</p> )
                     }
                     <p className="chart-description">Визуализация центров кластеров в 2D пространстве после PCA.</p>
                 </div>
@@ -201,10 +264,10 @@ const ChartsDisplay: React.FC<ChartsDisplayProps> = ({ details, sessionId }) => 
                         </div>
                     ) : scatterError ? (
                          <p className='chart-placeholder-text error'>{scatterError}</p>
+                    ) : scatterMessage ? (
+                         <p className='chart-placeholder-text'>{scatterMessage}</p>
                     ) : (
-                         <p className='chart-placeholder-text'>
-                            {details.status === 'PROCESSING' ? 'Генерация данных...' : 'Данные для графика рассеяния недоступны.'}
-                        </p>
+                         <p className='chart-placeholder-text'>Данные для графика рассеяния недоступны.</p>
                     )}
                     <p className="chart-description">{scatterDescription}</p>
                 </div>

@@ -7,9 +7,9 @@ interface SessionDetailsDisplayProps {
 }
 
 const PARAM_LABELS: { [key: string]: string } = {
-  n_clusters: 'Количество кластеров',
-  eps: 'Эпсилон (eps)',
-  min_samples: 'Мин. изображений в кластере'
+    n_clusters: 'n_clusters',
+    eps: 'eps',
+    min_samples: 'min_samples'
 };
 
 

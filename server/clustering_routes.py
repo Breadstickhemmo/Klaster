@@ -6,15 +6,18 @@ import time
 from flask import Blueprint, request, jsonify, current_app, send_from_directory
 from flask_jwt_extended import jwt_required, get_jwt_identity
 import numpy as np
-from sklearn.decomposition import PCA
 from werkzeug.utils import secure_filename
 from models import db, ClusteringSession, ClusterMetadata
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm.attributes import flag_modified
 from clustering_logic import (
-    run_clustering_pipeline, run_reclustering_pipeline, log_manual_adjustment,
-    load_embeddings, get_cluster_labels_for_session
+    run_clustering_pipeline,
+    redistribute_cluster_data,
+    log_manual_adjustment,
+    load_embeddings,
+    get_cluster_labels_for_session,
+    generate_and_save_scatter_data
 )
-import config
 
 logger = logging.getLogger(__name__)
 
@@ -120,8 +123,11 @@ def get_clustering_results(session_id):
     is_final_status = session.status in ['SUCCESS', 'RECLUSTERED']
     can_show_partial = session.status == 'PROCESSING'
 
-    clusters_data = []
     cluster_metadatas = session.clusters.filter_by(is_deleted=False).order_by(ClusterMetadata.cluster_label).all()
+    num_active_clusters = len(cluster_metadatas)
+    base_response["num_clusters"] = num_active_clusters
+
+    clusters_data = []
     for cluster_meta in cluster_metadatas:
         contact_sheet_url = None
         if cluster_meta.contact_sheet_path:
@@ -134,14 +140,20 @@ def get_clustering_results(session_id):
             "centroid_2d": cluster_meta.get_centroid_2d()
         })
     base_response["clusters"] = clusters_data
-    base_response["num_clusters"] = len(clusters_data)
 
     if session.status == 'PROCESSING' and not base_response.get("message"):
          base_response["message"] = "Идет обработка..."
     elif session.status == 'PROCESSING':
         base_response["message"] = (base_response.get("message", "") + " Идет постобработка...").strip()
 
-    if is_final_status:
+    scatter_data_generated = False
+
+    if num_active_clusters == 0 and is_final_status:
+        logger.info(f"Нет активных кластеров для сессии {session_id}. Отображение заглушки для PCA.")
+        base_response["scatter_data"] = {"message": "Нет активных кластеров для отображения PCA."}
+        scatter_data_generated = True
+
+    if not scatter_data_generated and (is_final_status or can_show_partial):
         scatter_cache_file_path = session.scatter_data_file_path
         scatter_data_loaded_from_cache = False
 
@@ -153,98 +165,76 @@ def get_clustering_results(session_id):
                      base_response["scatter_data"] = cached_data["scatter_plot_data"]
                      base_response["scatter_pca_time_sec"] = cached_data["pca_time"]
                      scatter_data_loaded_from_cache = True
+                     scatter_data_generated = True
                      logger.info(f"Загружены данные Scatter Plot из кэша для сессии {session_id}: {scatter_cache_file_path}")
                 else:
-                     logger.warning(f"Неверный формат кэша Scatter Plot для сессии {session_id}. Файл будет перезаписан.")
+                     logger.warning(f"Неверный формат кэша Scatter Plot для сессии {session_id}. Файл будет удален/перезаписан.")
                      session.scatter_data_file_path = None
+                     try:
+                         os.remove(scatter_cache_file_path)
+                     except OSError: pass
                      db.session.commit()
                      scatter_cache_file_path = None
 
             except (json.JSONDecodeError, OSError, IOError) as e:
                 logger.error(f"Ошибка загрузки кэша Scatter Plot ({scatter_cache_file_path}) для сессии {session_id}: {e}. Будет перегенерация.", exc_info=True)
                 session.scatter_data_file_path = None
+                try:
+                    if os.path.exists(scatter_cache_file_path): os.remove(scatter_cache_file_path)
+                except OSError: pass
                 db.session.commit()
                 scatter_cache_file_path = None
 
-        if not scatter_data_loaded_from_cache:
+        if not scatter_data_loaded_from_cache and is_final_status:
             if session.input_file_path and os.path.exists(session.input_file_path):
-                logger.info(f"Генерация данных Scatter Plot для сессии {session_id} (кэш не найден или невалиден)")
-                pca_start_time = time.time()
+                logger.info(f"Генерация данных Scatter Plot для сессии {session_id} (кэш не найден/невалиден/пропущен)")
                 try:
                     embeddings, _, _ = load_embeddings(session.input_file_path)
                     labels = get_cluster_labels_for_session(session, embeddings)
 
-                    if embeddings is not None and labels is not None and embeddings.shape[0] == labels.shape[0]:
-                        num_points = embeddings.shape[0]
-                        max_points = config.Config.MAX_SCATTER_PLOT_POINTS
-                        indices = np.arange(num_points)
+                    if embeddings is not None and labels is not None:
+                        new_cache_path, pca_time = generate_and_save_scatter_data(session.id, embeddings, labels)
 
-                        if num_points > max_points:
-                            logger.warning(f"Session {session_id}: Слишком много точек ({num_points}) для scatter plot, сэмплирование до {max_points}")
-                            indices = np.random.choice(indices, max_points, replace=False)
-                            embeddings_sampled = embeddings[indices]
-                            labels_sampled = labels[indices]
-                        else:
-                            embeddings_sampled = embeddings
-                            labels_sampled = labels
-
-                        if embeddings_sampled.shape[0] >= 2:
-                            pca = PCA(n_components=2, svd_solver='full', random_state=42)
+                        if new_cache_path:
                             try:
-                                embeddings_2d = pca.fit_transform(embeddings_sampled)
-                                pca_end_time = time.time()
-                                pca_time_sec = pca_end_time - pca_start_time
-                                base_response["scatter_pca_time_sec"] = pca_time_sec
-
-                                scatter_plot_data = []
-                                for i in range(embeddings_2d.shape[0]):
-                                    scatter_plot_data.append({
-                                        'x': float(embeddings_2d[i, 0]),
-                                        'y': float(embeddings_2d[i, 1]),
-                                        'cluster': str(labels_sampled[i])
-                                    })
-                                base_response["scatter_data"] = scatter_plot_data
-                                logger.info(f"Успешно сгенерированы данные Scatter Plot для сессии {session_id} ({len(scatter_plot_data)} точек) за {pca_time_sec:.2f} сек.")
-
-                                try:
-                                    scatter_filename = f"scatter_{session_id}.json"
-                                    scatter_cache_file_path = os.path.join(current_app.config['SCATTER_DATA_FOLDER'], scatter_filename)
-                                    cache_content = {
-                                        "scatter_plot_data": scatter_plot_data,
-                                        "pca_time": pca_time_sec
-                                    }
-                                    with open(scatter_cache_file_path, 'w') as f:
-                                        json.dump(cache_content, f)
-
-                                    session.scatter_data_file_path = scatter_cache_file_path
-                                    db.session.commit()
-                                    logger.info(f"Данные Scatter Plot сохранены в кэш для сессии {session_id}: {scatter_cache_file_path}")
-
-                                except (OSError, IOError) as e:
-                                    db.session.rollback()
-                                    logger.error(f"Не удалось сохранить кэш Scatter Plot для сессии {session_id}: {e}", exc_info=True)
-                                except SQLAlchemyError as e_db:
-                                    db.session.rollback()
-                                    logger.error(f"Не удалось обновить путь кэша в БД для сессии {session_id}: {e_db}", exc_info=True)
-
-                            except ValueError as pca_err:
-                                logger.error(f"PCA не удался для scatter plot в сессии {session_id}: {pca_err}", exc_info=True)
-                                base_response["scatter_data"] = {"error": f"Ошибка расчета PCA: {pca_err}"}
+                                with open(new_cache_path, 'r') as f:
+                                    new_cache_content = json.load(f)
+                                base_response["scatter_data"] = new_cache_content.get("scatter_plot_data")
+                                base_response["scatter_pca_time_sec"] = new_cache_content.get("pca_time")
+                                scatter_data_generated = True
+                                session.scatter_data_file_path = new_cache_path
+                                flag_modified(session, "scatter_data_file_path")
+                                db.session.commit()
+                                logger.info(f"Scatter plot сгенерирован, сохранен и загружен для ответа сессии {session_id}")
+                            except (OSError, IOError, json.JSONDecodeError) as read_err:
+                                logger.error(f"Не удалось прочитать свежесозданный кэш scatter plot {new_cache_path}: {read_err}")
+                                base_response["scatter_data"] = {"error": "Ошибка чтения сгенерированных данных PCA."}
+                                scatter_data_generated = True
                         else:
-                             logger.warning(f"Недостаточно точек ({embeddings_sampled.shape[0]}) после сэмплирования для PCA в сессии {session_id}")
-                             base_response["scatter_data"] = {"error": "Недостаточно данных для визуализации после сэмплирования."}
+                             logger.error(f"Функция generate_and_save_scatter_data не смогла создать кэш для сессии {session_id}")
+                             base_response["scatter_data"] = {"error": "Ошибка генерации или сохранения данных PCA."}
+                             scatter_data_generated = True
                     else:
-                        logger.warning(f"Не удалось получить эмбеддинги или метки для scatter plot, сессия {session_id}")
-                        base_response["scatter_data"] = {"error": "Не удалось загрузить эмбеддинги или метки для scatter plot."}
+                        logger.warning(f"Не удалось получить эмбеддинги или метки для генерации scatter plot, сессия {session_id}")
+                        base_response["scatter_data"] = {"error": "Не удалось загрузить данные для scatter plot."}
+                        scatter_data_generated = True
 
                 except Exception as e:
                     logger.error(f"Ошибка генерации данных scatter plot для сессии {session_id}: {e}", exc_info=True)
                     base_response["scatter_data"] = {"error": "Внутренняя ошибка при генерации данных scatter plot."}
+                    scatter_data_generated = True
             else:
-                 logger.warning(f"Путь к входному файлу не найден или некорректен для сессии {session_id}, невозможно сгенерировать scatter plot.")
+                 logger.warning(f"Путь к входному файлу не найден для сессии {session_id}, невозможно сгенерировать scatter plot.")
                  base_response["scatter_data"] = {"error": "Файл с входными данными не найден."}
+                 scatter_data_generated = True
 
-    elif not is_final_status and not can_show_partial:
+    if base_response["scatter_data"] is None and not scatter_data_generated:
+         if not is_final_status and not can_show_partial:
+            base_response["scatter_data"] = {"message": f"Визуализация PCA недоступна для статуса '{session.status}'."}
+         elif can_show_partial:
+             base_response["scatter_data"] = {"message": "Генерация данных PCA начнется после завершения кластеризации."}
+
+    if not is_final_status and not can_show_partial and not base_response.get("error"):
         base_response["error"] = f"Статус сессии: {session.status}. {session.result_message or ''}"
 
     return jsonify(base_response), 200
@@ -270,46 +260,32 @@ def get_contact_sheet_image(session_id, filename):
 
 @clustering_bp.route('/results/<session_id>/cluster/<cluster_label>', methods=['DELETE'])
 @jwt_required()
-def delete_cluster_and_recluster(session_id, cluster_label):
+def delete_and_redistribute_cluster(session_id, cluster_label):
     current_user_id = get_jwt_identity()
-    session = db.session.get(ClusteringSession, session_id)
-    if not session or session.user_id != int(current_user_id):
-        return jsonify({"error": "Сессия не найдена или доступ запрещен"}), 404
-    if session.status not in ['SUCCESS', 'RECLUSTERED']:
-        return jsonify({"error": f"Невозможно удалить кластер из сессии со статусом {session.status}"}), 400
-    cluster_to_delete = session.clusters.filter_by(cluster_label=cluster_label, is_deleted=False).first()
-    if not cluster_to_delete:
-         return jsonify({"error": "Кластер для удаления не найден или уже удален"}), 404
-    cluster_to_delete.is_deleted = True
-    sheet_path = cluster_to_delete.contact_sheet_path
-    cluster_to_delete.contact_sheet_path = None
-    log_manual_adjustment(session.id, current_user_id, "DELETE_CLUSTER", {"cluster_label": cluster_label})
+    logger.info(f"User {current_user_id} requested DELETE/REDISTRIBUTE for cluster {cluster_label} in session {session_id}")
+
     try:
-        db.session.commit()
-        logger.info(f"User {current_user_id} marked cluster {cluster_label} in session {session_id} for deletion.")
-    except SQLAlchemyError as e:
-        db.session.rollback()
-        logger.error(f"DB error marking cluster for deletion {session_id}/{cluster_label}: {e}", exc_info=True)
-        return jsonify({"error": "Ошибка БД при удалении кластера"}), 500
-    if sheet_path and os.path.exists(sheet_path):
-        try:
-            os.remove(sheet_path)
-            logger.info(f"Deleted contact sheet file: {sheet_path}")
-        except OSError as e:
-             logger.error(f"Error deleting contact sheet file {sheet_path}: {e}")
-    try:
-        logger.info(f"User {current_user_id} starting SYNC re-clustering for session {session_id}...")
-        new_session_id = run_reclustering_pipeline(
-            original_session_id=session_id, user_id=current_user_id
+        result = redistribute_cluster_data(
+            session_id=session_id,
+            cluster_label_to_remove_str=cluster_label,
+            user_id=int(current_user_id)
         )
-        logger.info(f"User {current_user_id} finished SYNC re-clustering. New session ID: {new_session_id}")
-        return jsonify({"message": "Кластер удален, рекластеризация завершена.", "new_session_id": new_session_id}), 200
-    except (ValueError, SQLAlchemyError) as ve:
-         logger.error(f"Validation or DB error during re-clustering start for session {session_id}: {ve}", exc_info=False)
-         return jsonify({"error": f"Ошибка входных данных или БД при рекластеризации: {ve}"}), 400
+        logger.info(f"User {current_user_id} finished DELETE/REDISTRIBUTE for {session_id}/{cluster_label}. Result: {result}")
+        return jsonify(result), 200
+
+    except ValueError as ve:
+         logger.warning(f"Validation error during redistribute for {session_id}/{cluster_label} by user {current_user_id}: {ve}", exc_info=False)
+         return jsonify({"error": f"Ошибка операции: {ve}"}), 400
+    except RuntimeError as re:
+         logger.error(f"Runtime error during redistribute for {session_id}/{cluster_label} by user {current_user_id}: {re}", exc_info=True)
+         return jsonify({"error": f"Внутренняя ошибка сервера при перераспределении: {re}"}), 500
+    except SQLAlchemyError as e:
+         logger.error(f"DB error during redistribute {session_id}/{cluster_label} by user {current_user_id}: {e}", exc_info=True)
+         return jsonify({"error": "Ошибка базы данных при выполнении операции"}), 500
     except Exception as e:
-        logger.error(f"SYNC re-clustering failed unexpectedly for session {session_id}: {e}", exc_info=True)
-        return jsonify({"error": "Внутренняя ошибка сервера при рекластеризации"}), 500
+        logger.error(f"Unexpected error during redistribute for {session_id}/{cluster_label} by user {current_user_id}: {e}", exc_info=True)
+        return jsonify({"error": "Неизвестная внутренняя ошибка сервера"}), 500
+
 
 @clustering_bp.route('/results/<session_id>/adjust', methods=['POST'])
 @jwt_required()

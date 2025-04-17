@@ -21,9 +21,9 @@ interface AlgorithmParamsState {
 }
 
 const PARAM_LABELS: { [key: string]: string } = {
-  n_clusters: 'Количество кластеров',
-  eps: 'Эпсилон (eps)',
-  min_samples: 'Мин. изображений в кластере'
+  n_clusters: 'Задайте количество поиска кластеров (n_clusters)',
+  eps: 'Задайте радиус окрестности для поиска соседних точек (eps)',
+  min_samples: 'Установите минимальное количество точек для формирования кластера (min_samples)'
 };
 
 

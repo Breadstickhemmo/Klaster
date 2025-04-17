@@ -7,7 +7,7 @@ import '../styles/ContactSheet.css';
 interface ContactSheetsGridProps {
     clusters: ClusterResult[];
     sessionId: string | null;
-    onDelete: (clusterId: string | number) => void;
+    onRedistribute: (clusterId: string | number) => void;
     isDeletingId: string | number | null;
     disabled: boolean;
     status: string;
@@ -15,8 +15,7 @@ interface ContactSheetsGridProps {
 
 const ContactSheetsGrid: React.FC<ContactSheetsGridProps> = ({
     clusters,
-    sessionId,
-    onDelete,
+    onRedistribute,
     isDeletingId,
     disabled,
     status
@@ -54,24 +53,15 @@ const ContactSheetsGrid: React.FC<ContactSheetsGridProps> = ({
         <div className="card contact-sheets-card">
             <h3>Контактные отпечатки ({sortedClusters.length} шт.)</h3>
             <div className="contact-sheets-grid-layout">
-                {sortedClusters.map(cluster => cluster.contactSheetUrl ? (
+                {sortedClusters.map(cluster => (
                     <ContactSheet
                         key={cluster.id}
                         clusterId={cluster.id}
                         imageUrl={cluster.contactSheetUrl}
                         clusterSize={cluster.size}
-                        onDelete={onDelete}
-                        isDeleting={isDeletingId === cluster.id || disabled}
+                        onRedistribute={onRedistribute}
+                        isProcessing={isDeletingId === cluster.id || disabled}
                     />
-                ) : (
-                    <div key={cluster.id} className="contact-sheet-card placeholder">
-                        <h4>Кластер {cluster.id}</h4>
-                        <div className="placeholder-image">
-                            <p>Нет<br />отпечатка</p>
-                        </div>
-                        <p>Размер: {cluster.size} изображений</p>
-                        <button className="secondary-btn delete-sheet-btn" disabled>Удаление недоступно</button>
-                    </div>
                 ))}
             </div>
         </div>

@@ -1,44 +1,64 @@
 import React from 'react';
-import '../styles/ContactSheet.css'
+import '../styles/ContactSheet.css';
 
 interface ContactSheetProps {
   clusterId: string | number;
-  imageUrl: string;
+  imageUrl: string | null | undefined;
   clusterSize: number;
-  onDelete: (clusterId: string | number) => void;
-  isDeleting: boolean;
+  onRedistribute: (clusterId: string | number) => void;
+  isProcessing: boolean; 
 }
+
+const ImagePlaceholder: React.FC = () => (
+    <div className="contact-sheet-image placeholder-image-container">
+        <p>Нет<br/>отпечатка</p>
+    </div>
+);
+
 
 const ContactSheet: React.FC<ContactSheetProps> = ({
   clusterId,
   imageUrl,
   clusterSize,
-  onDelete,
-  isDeleting
+  onRedistribute,
+  isProcessing
 }) => {
+  const buttonText = isProcessing ? 'Обработка...' : 'Удалить и перераспределить';
+  const buttonTitle = isProcessing ? "Выполняется операция..." : `Удалить кластер ${clusterId} и перераспределить его точки`;
+
+  const cardClassName = `contact-sheet-card ${isProcessing ? 'is-deleting' : ''}`;
+
   return (
-    <div className={`contact-sheet-card ${isDeleting ? 'is-deleting' : ''}`}>
+    <div className={cardClassName}>
       <h4>Кластер {clusterId}</h4>
-      <img
-        src={imageUrl}
-        alt={`Контактный отпечаток для кластера ${clusterId}`}
-        className="contact-sheet-image"
-        onError={(e) => {
-            const target = e.target as HTMLImageElement;
-            target.onerror = null;
-            target.src = 'https://placehold.co/300x200/EEE/31343C?text=Error+Loading';
-            console.warn(`Failed to load contact sheet image: ${imageUrl}`);
-        }}
-       />
+
+      {imageUrl ? (
+        <img
+          src={imageUrl}
+          alt={`Контактный отпечаток для кластера ${clusterId}`}
+          className="contact-sheet-image"
+          loading="lazy"
+          onError={(e) => {
+              const target = e.target as HTMLImageElement;
+              target.onerror = null;
+              target.alt = `Ошибка загрузки: ${clusterId}`;
+              target.style.display = 'none';
+              console.warn(`Failed to load contact sheet image: ${imageUrl}`);
+          }}
+         />
+      ) : (
+         <ImagePlaceholder />
+      )}
+
       <p>Размер: {clusterSize} изображений</p>
       <button
         className="secondary-btn delete-sheet-btn"
-        onClick={() => onDelete(clusterId)}
-        disabled={isDeleting}
-        title={isDeleting ? "Выполняется операция..." : "Удалить контактный отпечаток и рекластеризовать"}
-        aria-label={`Удалить контактный отпечаток кластера ${clusterId}`}
+        onClick={() => onRedistribute(clusterId)}
+        disabled={isProcessing}
+        title={buttonTitle}
+        aria-label={`Удалить кластер ${clusterId} и перераспределить точки`}
       >
-        {isDeleting ? 'Удаление...' : 'Удалить отпечаток'}
+        {buttonText}
       </button>
     </div>
   );
