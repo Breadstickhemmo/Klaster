@@ -25,10 +25,10 @@ yarn-error.log*
 .venv
 venv/
 __pycache__/
-uploads/
 app.log
 contact_sheets/
 migrations/
+uploads/
 
 # React
 build/

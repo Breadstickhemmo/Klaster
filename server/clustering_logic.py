@@ -7,6 +7,7 @@ import json
 import uuid
 from flask import current_app
 from sklearn.cluster import KMeans, DBSCAN
+from sklearn.decomposition import PCA
 from sklearn.metrics import silhouette_score, euclidean_distances
 try:
     import faiss
@@ -121,18 +122,13 @@ def find_nearest_images_to_centroids(embeddings, labels, centroids, image_ids, i
 
     for i in range(num_clusters):
         current_label = i
-
         cluster_mask = (labels == current_label)
         cluster_indices = np.where(cluster_mask)[0]
-
         if len(cluster_indices) == 0: continue
-
         cluster_embeddings = embeddings[cluster_indices]
         centroid = centroids[i]
-
         k_search = min(n_images, len(cluster_indices))
         if k_search == 0: continue
-
         distances = []
         indices_in_cluster = []
 
@@ -140,20 +136,15 @@ def find_nearest_images_to_centroids(embeddings, labels, centroids, image_ids, i
             try:
                  D, I = faiss_index.search(np.array([centroid]), k=min(k_search * 5, embeddings.shape[0]))
                  indices_global = I[0]
-                 distances_global = D[0]
-
                  filtered_indices = [idx for idx in indices_global if labels[idx] == current_label]
                  top_k_indices_global = filtered_indices[:k_search]
-
                  final_distances = []
                  for global_idx in top_k_indices_global:
                       dist = np.linalg.norm(embeddings[global_idx] - centroid)
                       final_distances.append(dist)
                  indices_local = [np.where(cluster_indices == glob_idx)[0][0] for glob_idx in top_k_indices_global]
-
                  distances = np.array(final_distances)
                  indices_in_cluster = np.array(indices_local)
-
             except Exception as faiss_search_e:
                 logger.warning(f"Ошибка поиска Faiss для кластера {current_label}: {faiss_search_e}. Переключение на sklearn.")
                 faiss_index = None
@@ -171,25 +162,20 @@ def find_nearest_images_to_centroids(embeddings, labels, centroids, image_ids, i
             img_path = image_paths[global_idx]
             dist = distances[j]
             neighbors_for_cluster.append((img_id, img_path, float(dist)))
-
         nearest_neighbors[current_label] = neighbors_for_cluster
-
     return nearest_neighbors
 
 def create_contact_sheet(image_paths, output_path, grid_size, thumb_size, format='JPEG'):
     if not image_paths: return False
-
     cols, rows = grid_size
     thumb_w, thumb_h = thumb_size
     gap = 5
     total_width = cols * thumb_w + (cols + 1) * gap
     total_height = rows * thumb_h + (rows + 1) * gap
-
     contact_sheet = Image.new('RGB', (total_width, total_height), color='white')
     draw = ImageDraw.Draw(contact_sheet)
     try: font = ImageFont.truetype("arial.ttf", 10)
     except IOError: font = ImageFont.load_default()
-
     current_col, current_row = 0, 0
     for img_path in image_paths[:cols*rows]:
         try:
@@ -200,22 +186,17 @@ def create_contact_sheet(image_paths, output_path, grid_size, thumb_size, format
             contact_sheet.paste(img, (x_pos, y_pos))
         except FileNotFoundError:
             logger.warning(f"Файл не найден для отпечатка: {img_path}")
-            x_pos = gap + current_col * (thumb_w + gap)
-            y_pos = gap + current_row * (thumb_h + gap)
+            x_pos = gap + current_col * (thumb_w + gap); y_pos = gap + current_row * (thumb_h + gap)
             draw.rectangle([x_pos, y_pos, x_pos + thumb_w, y_pos + thumb_h], fill="lightgray", outline="red")
             draw.text((x_pos + 5, y_pos + 5), "Not Found", fill="red", font=font)
         except Exception as e:
             logger.error(f"Ошибка обработки {img_path} для отпечатка: {e}")
-            x_pos = gap + current_col * (thumb_w + gap)
-            y_pos = gap + current_row * (thumb_h + gap)
+            x_pos = gap + current_col * (thumb_w + gap); y_pos = gap + current_row * (thumb_h + gap)
             draw.rectangle([x_pos, y_pos, x_pos + thumb_w, y_pos + thumb_h], fill="lightgray", outline="orange")
             draw.text((x_pos + 5, y_pos + 5), "Error", fill="orange", font=font)
-
         current_col += 1
         if current_col >= cols:
-            current_col = 0
-            current_row += 1
-
+            current_col = 0; current_row += 1
     try:
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         contact_sheet.save(output_path, format=format, quality=85)
@@ -225,18 +206,67 @@ def create_contact_sheet(image_paths, output_path, grid_size, thumb_size, format
         logger.error(f"Ошибка сохранения контактного отпечатка {output_path}: {e}", exc_info=True)
         return False
 
+def calculate_and_save_centroids_2d(session_id):
+    logger.info(f"Calculating 2D centroids for session {session_id}")
+    try:
+        clusters = ClusterMetadata.query.filter_by(session_id=session_id, is_deleted=False).all()
+        if not clusters:
+            logger.info(f"No active clusters found for session {session_id} to calculate 2D centroids.")
+            return
+        original_centroids = []
+        cluster_map = {}
+        valid_indices = []
+        for i, cluster_meta in enumerate(clusters):
+            centroid_vec = cluster_meta.get_centroid()
+            if centroid_vec is not None:
+                original_centroids.append(centroid_vec)
+                cluster_map[len(original_centroids) - 1] = cluster_meta.id
+                valid_indices.append(i)
+            else:
+                 logger.warning(f"Centroid vector is None for cluster {cluster_meta.id} in session {session_id}")
+
+        if len(original_centroids) < 2:
+            logger.warning(f"Need at least 2 valid centroids for PCA, found {len(original_centroids)} for session {session_id}. Skipping 2D calculation.")
+            for cluster_meta in clusters:
+                cluster_meta.set_centroid_2d(None)
+            db.session.commit()
+            return
+
+        original_centroids_np = np.array(original_centroids)
+        pca = PCA(n_components=2, svd_solver='full', random_state=42)
+        try:
+            centroids_2d = pca.fit_transform(original_centroids_np)
+        except ValueError as pca_err:
+             logger.error(f"PCA failed for session {session_id}: {pca_err}", exc_info=True)
+             for cluster_meta in clusters:
+                 cluster_meta.set_centroid_2d(None)
+             db.session.commit()
+             return
+
+        for idx_in_pca, cluster_db_id in cluster_map.items():
+            cluster_to_update = next((c for c in clusters if c.id == cluster_db_id), None)
+            if cluster_to_update:
+                coords_2d = centroids_2d[idx_in_pca]
+                cluster_to_update.set_centroid_2d(coords_2d)
+                logger.debug(f"Saved 2D centroid for cluster {cluster_to_update.id}: {coords_2d}")
+
+        db.session.commit()
+        logger.info(f"Successfully calculated and saved 2D centroids for session {session_id}")
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Error calculating/saving 2D centroids for session {session_id}: {e}", exc_info=True)
+
 def save_clustering_results(session, labels, centroids, nearest_neighbors_map, image_paths_available):
     app_config = current_app.config
     contact_sheet_dir_base = app_config['CONTACT_SHEET_FOLDER']
     grid_size = app_config.get('CONTACT_SHEET_GRID_SIZE', (3, 3))
     thumb_size = app_config.get('CONTACT_SHEET_THUMBNAIL_SIZE', (100, 100))
     output_format = app_config.get('CONTACT_SHEET_OUTPUT_FORMAT', 'JPEG')
-
     unique_labels = np.unique(labels)
+    created_cluster_metadata = []
 
     for i, label in enumerate(unique_labels):
         if label == -1: continue
-
         cluster_mask = (labels == label)
         cluster_size = int(np.sum(cluster_mask))
         centroid_index = int(label)
@@ -244,17 +274,13 @@ def save_clustering_results(session, labels, centroids, nearest_neighbors_map, i
              logger.error(f"Некорректный индекс центроида {centroid_index} для метки {label} в сессии {session.id}")
              continue
         centroid_vector = centroids[centroid_index]
-
         cluster_meta = ClusterMetadata(
-            session_id=session.id,
-            cluster_label=str(label),
-            original_cluster_id=str(label),
-            size=cluster_size,
-            is_deleted=False
+            session_id=session.id, cluster_label=str(label), original_cluster_id=str(label),
+            size=cluster_size, is_deleted=False
         )
         cluster_meta.set_centroid(centroid_vector)
         cluster_meta.set_metrics({})
-
+        cluster_meta.set_centroid_2d(None)
         contact_sheet_path = None
         if image_paths_available and label in nearest_neighbors_map and nearest_neighbors_map[label]:
             sheet_filename = f"cs_{session.id}_{label}.{output_format.lower()}"
@@ -264,16 +290,16 @@ def save_clustering_results(session, labels, centroids, nearest_neighbors_map, i
             if create_contact_sheet(neighbor_paths, sheet_full_path, grid_size, thumb_size, output_format):
                  contact_sheet_path = sheet_full_path
         cluster_meta.contact_sheet_path = contact_sheet_path
-
         db.session.add(cluster_meta)
+        created_cluster_metadata.append(cluster_meta)
+    return created_cluster_metadata
 
-def run_clustering_pipeline(user_id, file_path, algorithm, params):
+def run_clustering_pipeline(user_id, file_path, algorithm, params, original_filename):
     session_id = str(uuid.uuid4())
     logger.info(f"Запуск синхронной кластеризации {session_id} для пользователя {user_id}")
-
     session = ClusteringSession(
-        id=session_id, user_id=user_id, status='STARTED',
-        algorithm=algorithm, input_file_path=file_path
+        id=session_id, user_id=user_id, status='STARTED', algorithm=algorithm,
+        input_file_path=file_path, original_input_filename=original_filename
     )
     session.set_params(params)
     db.session.add(session)
@@ -287,15 +313,12 @@ def run_clustering_pipeline(user_id, file_path, algorithm, params):
     try:
         embeddings, image_ids, image_paths = load_embeddings(file_path)
         image_paths_available = image_paths is not None
-
         labels, centroids, metrics, processing_time = perform_clustering(embeddings, algorithm, params)
         session.processing_time_sec = processing_time
-
         unique_labels = np.unique(labels)
         n_clusters_found = len(centroids)
         session.num_clusters = n_clusters_found
         logger.info(f"Session {session_id}: Найдено {n_clusters_found} кластеров.")
-
         nearest_neighbors_map = {}
         if image_paths_available:
             logger.info(f"Session {session_id}: Поиск изображений для отпечатков...")
@@ -303,38 +326,41 @@ def run_clustering_pipeline(user_id, file_path, algorithm, params):
             nearest_neighbors_map = find_nearest_images_to_centroids(
                 embeddings, labels, centroids, image_ids, image_paths, images_per_cluster
             )
-
-        logger.info(f"Session {session_id}: Сохранение результатов...")
+        logger.info(f"Session {session_id}: Сохранение результатов кластеризации...")
         save_clustering_results(session, labels, centroids, nearest_neighbors_map, image_paths_available)
-
+        session.status = 'PROCESSING'
+        db.session.commit()
+        calculate_and_save_centroids_2d(session.id)
         session.status = 'SUCCESS'
         session.result_message = f'Кластеризация завершена. Найдено {n_clusters_found} кластеров.'
         db.session.commit()
-        logger.info(f"Синхронная кластеризация {session_id} успешно завершена.")
+        logger.info(f"Синхронная кластеризация {session_id} успешно завершена (включая 2D центроиды).")
         return session.id
-
     except Exception as e:
         db.session.rollback()
         logger.error(f"Ошибка в синхронной кластеризации {session_id}: {e}", exc_info=True)
         try:
-             session.status = 'FAILURE'
-             session.result_message = f"Ошибка: {str(e)[:500]}"
-             db.session.commit()
+             fail_session = db.session.get(ClusteringSession, session_id)
+             if fail_session:
+                fail_session.status = 'FAILURE'
+                fail_session.result_message = f"Ошибка: {str(e)[:500]}"
+                db.session.commit()
+             else:
+                logger.error(f"Не удалось найти сессию {session_id} для обновления статуса на FAILURE")
         except Exception as db_err:
+             db.session.rollback()
              logger.error(f"Не удалось обновить статус сессии {session_id} на FAILURE: {db_err}", exc_info=True)
         raise
 
 def run_reclustering_pipeline(original_session_id, user_id):
     new_session_id = str(uuid.uuid4())
     logger.info(f"Запуск синхронной рекластеризации {new_session_id} для сессии {original_session_id}")
-
     original_session = db.session.get(ClusteringSession, original_session_id)
     if not original_session or original_session.user_id != user_id:
         raise ValueError("Исходная сессия не найдена или доступ запрещен")
-
     new_session = ClusteringSession(
-        id=new_session_id, user_id=user_id, status='STARTED',
-        algorithm=original_session.algorithm, input_file_path=original_session.input_file_path
+        id=new_session_id, user_id=user_id, status='STARTED', algorithm=original_session.algorithm,
+        input_file_path=original_session.input_file_path, original_input_filename=original_session.original_input_filename
     )
     new_session.set_params(original_session.get_params())
     db.session.add(new_session)
@@ -349,17 +375,14 @@ def run_reclustering_pipeline(original_session_id, user_id):
     try:
         embeddings, image_ids, image_paths = load_embeddings(original_session.input_file_path)
         image_paths_available = image_paths is not None
-
         labels, centroids, metrics, processing_time = perform_clustering(
             embeddings, new_session.algorithm, new_session.get_params()
         )
         new_session.processing_time_sec = processing_time
-
         unique_labels = np.unique(labels)
         n_clusters_found = len(centroids)
         new_session.num_clusters = n_clusters_found
         logger.info(f"Recluster {new_session_id}: Найдено {n_clusters_found} кластеров.")
-
         nearest_neighbors_map = {}
         if image_paths_available:
             logger.info(f"Recluster {new_session_id}: Поиск изображений...")
@@ -367,35 +390,37 @@ def run_reclustering_pipeline(original_session_id, user_id):
             nearest_neighbors_map = find_nearest_images_to_centroids(
                 embeddings, labels, centroids, image_ids, image_paths, images_per_cluster
             )
-
         logger.info(f"Recluster {new_session_id}: Сохранение результатов...")
         save_clustering_results(new_session, labels, centroids, nearest_neighbors_map, image_paths_available)
-
+        new_session.status = 'PROCESSING'
+        db.session.commit()
+        calculate_and_save_centroids_2d(new_session.id)
         new_session.status = 'SUCCESS'
         new_session.result_message = f'Рекластеризация завершена. Найдено {n_clusters_found} кластеров.'
         original_session.status = 'RECLUSTERED'
         db.session.commit()
         logger.info(f"Синхронная рекластеризация {new_session_id} успешно завершена.")
         return new_session.id
-
     except Exception as e:
         db.session.rollback()
         logger.error(f"Ошибка в синхронной рекластеризации {new_session_id}: {e}", exc_info=True)
         try:
-            new_session.status = 'FAILURE'
-            new_session.result_message = f"Ошибка рекластеризации: {str(e)[:500]}"
-            original_session.status = 'RECLUSTERING_FAILED'
+            fail_session = db.session.get(ClusteringSession, new_session_id)
+            if fail_session:
+                fail_session.status = 'FAILURE'
+                fail_session.result_message = f"Ошибка рекластеризации: {str(e)[:500]}"
+            if original_session:
+                 original_session.status = 'RECLUSTERING_FAILED'
             db.session.commit()
         except Exception as db_err:
+             db.session.rollback()
              logger.error(f"Не удалось обновить статус сессии {new_session_id} на FAILURE: {db_err}", exc_info=True)
         raise
 
 def log_manual_adjustment(session_id, user_id, action, details):
     try:
         log_entry = ManualAdjustmentLog(
-            session_id=session_id,
-            user_id=user_id,
-            action_type=action
+            session_id=session_id, user_id=user_id, action_type=action
         )
         log_entry.set_details(details)
         db.session.add(log_entry)

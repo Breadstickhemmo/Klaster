@@ -1,0 +1,43 @@
+.session-details-card {
+    margin-bottom: 2rem; /* Отступ снизу */
+}
+
+.session-details-card h3 {
+    margin-top: 0;
+    margin-bottom: 1.5rem;
+    border-bottom: 1px solid #eee;
+    padding-bottom: 0.5rem;
+    font-size: 1.3rem; /* Чуть меньше основного заголовка */
+    word-break: break-all; /* Перенос длинных ID */
+}
+
+.details-grid {
+    display: grid;
+    grid-template-columns: auto 1fr; /* Метка | Значение */
+    gap: 0.6rem 1rem; /* Вертикальный и горизонтальный отступ */
+    font-size: 0.95em;
+    margin-bottom: 1rem;
+}
+
+.details-grid span { /* Метки */
+    color: #555;
+    text-align: right;
+}
+
+.details-grid strong { /* Значения */
+    word-break: break-word; /* Перенос длинных значений */
+}
+
+.session-message {
+    font-size: 0.9em;
+    margin-top: 1rem;
+    padding-top: 1rem;
+    border-top: 1px dashed #eee;
+}
+
+.session-error {
+     margin-top: 1rem;
+     padding-top: 1rem;
+     border-top: 1px dashed #ffdddd;
+     font-size: 0.9em;
+}

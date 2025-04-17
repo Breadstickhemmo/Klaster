@@ -13,12 +13,13 @@ export interface ClusterResult {
     size: number;
     contactSheetUrl: string | null;
     metrics?: any;
+    centroid_2d?: [number, number] | null;
 }
 
 export interface SessionResultResponse {
     session_id: string;
     status: string;
-    input_filename: string | null;
+    original_filename: string | null;
     algorithm: string;
     params: { [key: string]: number | string };
     num_clusters: number | null;
@@ -36,14 +37,13 @@ export interface SessionListItem {
      params: { [key: string]: number | string };
      num_clusters: number | null;
      result_message: string | null;
-     input_filename: string;
+     original_filename: string | null;
 }
 
 const handleResponse = async (response: Response) => {
     if (response.status === 204) {
         return null;
     }
-
     let data;
     try {
         data = await response.json();
@@ -54,11 +54,9 @@ const handleResponse = async (response: Response) => {
         console.warn("Response was OK but body is not JSON.");
         return null;
     }
-
     if (!response.ok) {
         throw new Error(data?.error || data?.message || `HTTP error! Status: ${response.status}`);
     }
-
     return data;
 };
 
@@ -67,11 +65,7 @@ export const startClustering = async (fetchWithAuth: FetchWithAuth, data: StartC
     formData.append('embeddingFile', data.embeddingFile);
     formData.append('algorithm', data.algorithm);
     formData.append('params', JSON.stringify(data.params));
-
-    const response = await fetchWithAuth('/api/clustering/start', {
-        method: 'POST',
-        body: formData,
-    });
+    const response = await fetchWithAuth('/api/clustering/start', { method: 'POST', body: formData });
     return handleResponse(response);
 };
 
@@ -87,20 +81,14 @@ export const getClusteringResults = async (fetchWithAuth: FetchWithAuth, session
 };
 
 export const deleteClusterAndRecluster = async (fetchWithAuth: FetchWithAuth, sessionId: string, clusterLabel: string | number): Promise<{ message: string; new_session_id: string }> => {
-    const response = await fetchWithAuth(`/api/clustering/results/${sessionId}/cluster/${clusterLabel}`, {
-        method: 'DELETE',
-    });
+    const response = await fetchWithAuth(`/api/clustering/results/${sessionId}/cluster/${clusterLabel}`, { method: 'DELETE' });
     return handleResponse(response);
 };
 
 export const renameCluster = async (fetchWithAuth: FetchWithAuth, sessionId: string, clusterId: string | number, newName: string): Promise<{ message: string; cluster: { id: string | number, name: string | null }}> => {
     const response = await fetchWithAuth(`/api/clustering/results/${sessionId}/adjust`, {
         method: 'POST',
-        body: JSON.stringify({
-            action: 'RENAME',
-            cluster_id: clusterId,
-            new_name: newName
-        })
+        body: JSON.stringify({ action: 'RENAME', cluster_id: clusterId, new_name: newName })
     });
     return handleResponse(response);
 };
