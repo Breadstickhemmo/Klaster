@@ -25,9 +25,9 @@ yarn-error.log*
 .venv
 venv/
 __pycache__/
-reports/
+uploads/
 app.log
-instance/
+contact_sheets/
 migrations/
 
 # React
