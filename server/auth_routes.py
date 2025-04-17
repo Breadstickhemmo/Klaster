@@ -39,7 +39,6 @@ def register_auth_routes(app):
             logger.error(f"Ошибка регистрации пользователя {username}: {e}", exc_info=True)
             return jsonify({"error": "Ошибка регистрации"}), 500
 
-
     @app.route('/api/login', methods=['POST'])
     def login():
         data = request.get_json()

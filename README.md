@@ -17,40 +17,6 @@
 *   **База данных:** SQLAlchemy ORM (поддерживает SQLite по умолчанию, PostgreSQL и др.)
 *   **Миграции БД:** Flask-Migrate
 *   **Аутентификация:** Flask-JWT-Extended (JWT токены), Flask-Bcrypt (хэширование паролей)
-*   **Работа с API:** Requests (для GitHub API)
-
-## Структура проекта
-
-```
-/
-├── README.md                       # Документация проекта
-├── requirements.txt                # Зависимости Python для сервера
-├── .gitignore                      # Файлы и папки, игнорируемые Git
-├── LICENSE                         # Лицензия проекта
-├── client/                         # Фронтенд-приложение на React + TypeScript
-│   ├── package.json                # Зависимости и скрипты Node.js
-│   ├── tsconfig.json               # Конфигурация TypeScript
-│   ├── public/                     # Статические файлы (index.html, иконки и др.)
-│   └── src/                        # Исходный код фронтенда
-│       ├── App.tsx                 # Главный компонент React
-│       ├── types.ts                # Типы TypeScript
-│       └── components/             # React-компоненты
-│            ├── Header.tsx         # Компонент шапки сайта
-│            ├── ReportForm.tsx     # Компонент формы для создания нового запроса на отчет
-│            ├── ReportTable.tsx    # Компонент таблицы
-│            └── AuthModal.tsx      # Компонент модального окна
-├── server/                         # Бэкенд-приложение на Flask (Python)
-│   ├── app.py                      # Точка входа приложения, настройка Flask
-│   ├── config.py                   # Конфигурация приложения
-│   ├── models.py                   # Определения моделей базы данных
-│   ├── routes.py                   # Основные API маршруты
-│   ├── auth_routes.py              # Маршруты аутентификации (регистрация, вход)
-│   ├── utils.py                    # Вспомогательные функции
-│   ├── reports.py                  # Логика генерации отчетов
-│   ├── logging_config.py           # Настройка логирования
-│   ├── migrations/                 # Миграции базы данных (Flask-Migrate)
-│   └── instance/                   # Папка для файлов конфигурации и базы данных
-```
 
 ## Предварительные требования
 ```bash
@@ -78,9 +44,6 @@ touch .env
 ```
 
 **Содержимое файла .env:**
-
-Обязательно: Ваш персональный токен GitHub с правами на чтение репозиториев
-`GITHUB_TOKEN=ghp_YOUR_GITHUB_PERSONAL_ACCESS_TOKEN`
 
 Обязательно: Секретный ключ для подписи JWT токенов
 Пример генерации в Python: 

@@ -1,4 +1,5 @@
 import React from 'react';
+import '../styles/Header.css'
 
 interface User {
   id: number;
@@ -31,7 +32,7 @@ const Header: React.FC<HeaderProps> = ({
   return (
     <header className="header">
       <div className="header-content">
-        <h1>Кластеризация без смс но с регистрацией</h1>
+        <h1>Система кластеризации изображений</h1>
         <p>Класстеризация по эмбендингу</p>
       </div>
       <div className="auth-buttons">

@@ -1,6 +1,7 @@
 import React, { useEffect } from 'react';
 import { useForm, SubmitHandler, FieldErrors } from 'react-hook-form';
 import { toast } from 'react-toastify';
+import '../styles/AuthModal.css'
 
 type LoginFormInputs = {
   email: string;
