@@ -5,6 +5,7 @@ import ClusteringControls from './ClusteringControls';
 import SessionDetailsDisplay from './SessionDetailsDisplay';
 import ChartsDisplay from './ChartsDisplay';
 import ContactSheetsGrid from './ContactSheetsGrid';
+import ConfirmationModal from './ConfirmationModal';
 import {
     startClustering,
     getClusteringSessions,
@@ -22,6 +23,11 @@ interface ClusteringDashboardProps {
   fetchWithAuth: FetchWithAuth;
 }
 
+interface ConfirmModalArgs {
+    clusterId: string | number;
+    clusterDisplayName: string;
+}
+
 const FINAL_STATUSES = ['SUCCESS', 'FAILURE', 'RECLUSTERED', 'RECLUSTERING_FAILED'];
 const POLLING_INTERVAL_MS = 5000;
 
@@ -35,6 +41,10 @@ const ClusteringDashboard: React.FC<ClusteringDashboardProps> = ({ fetchWithAuth
   const [isDeletingId, setIsDeletingId] = useState<string | number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isRenamingId, setIsRenamingId] = useState<string | number | null>(null);
+
+  const [isConfirmModalOpen, setIsConfirmModalOpen] = useState(false);
+  const [confirmModalArgs, setConfirmModalArgs] = useState<ConfirmModalArgs | null>(null);
+  const [isConfirmLoading, setIsConfirmLoading] = useState(false);
 
   const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -176,62 +186,76 @@ const ClusteringDashboard: React.FC<ClusteringDashboardProps> = ({ fetchWithAuth
   }, [fetchWithAuth, stopPolling]);
 
    const handleDeleteAndRedistributeCluster = useCallback(async (clusterLabel: string | number) => {
-    if (!currentSessionId) { toast.error("Нет активной сессии для выполнения операции."); return; }
+    if (!currentSessionId || !currentSessionDetails) { toast.error("Нет активной сессии или данных для выполнения операции."); return; }
 
     const labelToDelete = String(clusterLabel);
-    const confirmed = window.confirm(`Вы уверены, что хотите удалить кластер ${labelToDelete} и перераспределить его точки по ближайшим оставшимся кластерам? Это действие необратимо для текущей сессии.`);
-    if (!confirmed) {
-        return;
-    }
+    const clusterToDelete = currentSessionDetails.clusters.find(c => String(c.id) === labelToDelete);
+    const clusterDisplayName = clusterToDelete?.name || `Кластер ${labelToDelete}`;
 
-    setIsDeletingId(clusterLabel);
-    setIsLoading(true);
-    setError(null);
-    stopPolling();
+    setConfirmModalArgs({ clusterId: clusterLabel, clusterDisplayName });
+    setIsConfirmModalOpen(true);
 
-    toast.info(`Удаляем кластер ${labelToDelete} и перераспределяем его точки...`);
+  }, [currentSessionId, currentSessionDetails]);
 
-    try {
-        const response = await deleteAndRedistributeCluster(fetchWithAuth, currentSessionId, labelToDelete);
-        toast.success(response.message || `Кластер ${labelToDelete} удален, точки перераспределены.`);
+  const confirmDeletion = useCallback(async () => {
+      if (!currentSessionId || !confirmModalArgs) return;
 
-        await fetchSessionResults(currentSessionId);
+      const { clusterId, clusterDisplayName } = confirmModalArgs;
 
-        setSessions(prevSessions =>
-            prevSessions.map(s =>
-                s.session_id === currentSessionId
-                    ? { ...s, result_message: response.message || s.result_message }
-                    : s
-            )
-        );
+      setIsConfirmLoading(true);
+      setIsDeletingId(clusterId);
+      setError(null);
+      stopPolling();
 
-        setCurrentSessionDetails(prevDetails => {
-             if (prevDetails && prevDetails.session_id === currentSessionId && !FINAL_STATUSES.includes(prevDetails.status)) {
-                  startPolling(currentSessionId);
-             }
-             return prevDetails;
-         });
+      toast.info(`Удаляем '${clusterDisplayName}' и перераспределяем его точки...`);
 
-    } catch (err: any) {
-        console.error(`Error deleting/redistributing cluster ${labelToDelete}:`, err);
-        const errorMsg = err.message || `Не удалось удалить/перераспределить кластер ${labelToDelete}.`;
-        setError(errorMsg);
-        toast.error(errorMsg);
-        fetchSessionResults(currentSessionId);
-    } finally {
-        setIsDeletingId(null);
-        setIsLoading(false);
-    }
-  }, [currentSessionId, fetchWithAuth, stopPolling, fetchSessionResults, startPolling]);
+      try {
+          const response = await deleteAndRedistributeCluster(fetchWithAuth, currentSessionId, String(clusterId));
+          toast.success(response.message || `'${clusterDisplayName}' удален, точки перераспределены.`);
+          await fetchSessionResults(currentSessionId);
+          setSessions(prevSessions =>
+              prevSessions.map(s =>
+                  s.session_id === currentSessionId
+                      ? { ...s, result_message: response.message || s.result_message }
+                      : s
+              )
+          );
+
+          setCurrentSessionDetails(prevDetails => {
+               if (prevDetails && prevDetails.session_id === currentSessionId && !FINAL_STATUSES.includes(prevDetails.status)) {
+                    startPolling(currentSessionId);
+               }
+               return prevDetails;
+           });
+
+      } catch (err: any) {
+          console.error(`Error deleting/redistributing cluster ${clusterId}:`, err);
+          const errorMsg = err.message || `Не удалось удалить/перераспределить '${clusterDisplayName}'.`;
+          setError(errorMsg);
+          toast.error(errorMsg);
+          fetchSessionResults(currentSessionId);
+      } finally {
+          setIsConfirmLoading(false);
+          setIsDeletingId(null);
+          setIsConfirmModalOpen(false);
+          setConfirmModalArgs(null);
+      }
+  }, [currentSessionId, confirmModalArgs, fetchWithAuth, stopPolling, fetchSessionResults, startPolling]);
+
+  const closeConfirmModal = () => {
+       setIsConfirmModalOpen(false);
+       setConfirmModalArgs(null);
+   };
 
   const handleRenameCluster = useCallback(async (clusterId: string | number, newName: string): Promise<boolean> => {
     if (!currentSessionId) {
         toast.error("Нет активной сессии для переименования.");
         return false;
     }
+    const clusterToRename = currentSessionDetails?.clusters.find(c => String(c.id) === String(clusterId));
+    const oldDisplayName = clusterToRename?.name || `Кластер ${clusterId}`;
 
     setIsRenamingId(clusterId);
-    setIsLoading(true);
     let success = false;
 
     try {
@@ -241,18 +265,17 @@ const ClusteringDashboard: React.FC<ClusteringDashboardProps> = ({ fetchWithAuth
 
     } catch (err: any) {
         console.error(`Error renaming cluster ${clusterId}:`, err);
-        const errorMsg = err.message || `Не удалось переименовать кластер ${clusterId}.`;
+        const errorMsg = err.message || `Не удалось переименовать '${oldDisplayName}'.`;
         setError(errorMsg);
         toast.error(errorMsg);
         success = false;
     } finally {
         setIsRenamingId(null);
-        setIsLoading(false);
     }
     return success;
-  }, [currentSessionId, fetchWithAuth, fetchSessionResults]);
+  }, [currentSessionId, currentSessionDetails, fetchWithAuth, fetchSessionResults]);
 
-  const isProcessing = isLoading || isDeletingId !== null || isRenamingId !== null;
+  const isProcessing = isLoading || isConfirmLoading || isFetchingResults || isFetchingSessions || isRenamingId !== null || isDeletingId !== null;
   const isCurrentSessionLoading = isFetchingResults && !pollingIntervalRef.current;
 
   return (
@@ -323,6 +346,30 @@ const ClusteringDashboard: React.FC<ClusteringDashboardProps> = ({ fetchWithAuth
 
         {!currentSessionId && !isProcessing && sessions.length > 0 && ( <div className="card status-card"> <p>Выберите сессию из списка выше для просмотра результатов или запустите новую кластеризацию.</p> </div> )}
         {!currentSessionId && !isProcessing && sessions.length === 0 && !isFetchingSessions && !error && ( <div className="card status-card"> <p>Нет доступных сессий. Запустите новую кластеризацию, используя форму выше.</p> </div> )}
+
+        <ConfirmationModal
+            isOpen={isConfirmModalOpen}
+            onClose={closeConfirmModal}
+            onConfirm={confirmDeletion}
+            title="Подтверждение удаления"
+            message={
+                confirmModalArgs ? (
+                    <>
+                        Вы уверены, что хотите удалить <br />
+                        <strong>'{confirmModalArgs.clusterDisplayName}'</strong>?
+                        <br />
+                        Его точки будут перераспределены по ближайшим оставшимся кластерам.
+                        Это действие необратимо для текущей сессии.
+                    </>
+                ) : (
+                    'Подтвердите действие.'
+                )
+            }
+            confirmText="Удалить и перераспределить"
+            cancelText="Отмена"
+            confirmButtonClass="danger-btn"
+            isLoading={isConfirmLoading}
+        />
 
     </div>
   );

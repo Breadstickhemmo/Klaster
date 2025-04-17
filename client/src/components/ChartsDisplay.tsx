@@ -306,6 +306,7 @@ const ChartsDisplay: React.FC<ChartsDisplayProps> = ({ details, sessionId }) => 
                     {barChartData ? ( <div className="chart-container" style={{ height: '350px' }}> <Bar key={`${chartKeyBase}-bar`} options={barChartOptions} data={barChartData} /> </div> )
                     : (<p className='chart-placeholder-text'>Нет данных для графика размеров.</p>)
                     }
+                    <p className="chart-description">Визуализация распределения изображений по кластерам.</p>
                 </div>
 
                 <div className='chart-wrapper' style={{marginBottom: '2rem'}}>

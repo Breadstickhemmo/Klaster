@@ -612,6 +612,8 @@ def redistribute_cluster_data(session_id, cluster_label_to_remove_str, user_id):
     if not cluster_to_remove:
         raise ValueError(f"Кластер {cluster_label_to_remove_str} не найден или уже удален")
 
+    removed_cluster_display_name = cluster_to_remove.name or f"Кластер {cluster_label_to_remove_str}"
+
     remaining_clusters = session.clusters.filter(
         ClusterMetadata.cluster_label != cluster_label_to_remove_str,
         ClusterMetadata.is_deleted == False
@@ -631,13 +633,17 @@ def redistribute_cluster_data(session_id, cluster_label_to_remove_str, user_id):
         cluster_to_remove.is_deleted = True
         sheet_path = cluster_to_remove.contact_sheet_path
         cluster_to_remove.contact_sheet_path = None
-        log_manual_adjustment(session.id, user_id, "DELETE_CLUSTER_NO_TARGETS", {"cluster_label": cluster_label_to_remove_str})
+        log_manual_adjustment(session.id, user_id, "DELETE_CLUSTER_NO_TARGETS", {"cluster_label": cluster_label_to_remove_str, "cluster_name": cluster_to_remove.name})
+
+        session.result_message = f"'{removed_cluster_display_name}' удален. Других кластеров для перераспределения не найдено."
+        flag_modified(session, "result_message")
+
         db.session.commit()
         if sheet_path and os.path.exists(sheet_path):
             try: os.remove(sheet_path)
             except OSError as e: logger.error(f"Error deleting contact sheet file {sheet_path}: {e}")
         calculate_and_save_centroids_2d(session.id)
-        return {"message": f"Кластер {cluster_label_to_remove_str} удален. Других кластеров для перераспределения не найдено."}
+        return {"message": session.result_message}
 
     try:
         embeddings, image_ids, image_paths = load_embeddings(session.input_file_path)
@@ -665,7 +671,11 @@ def redistribute_cluster_data(session_id, cluster_label_to_remove_str, user_id):
             cluster_to_remove.is_deleted = True
             sheet_path = cluster_to_remove.contact_sheet_path
             cluster_to_remove.contact_sheet_path = None
-            log_manual_adjustment(session.id, user_id, "DELETE_CLUSTER_NO_POINTS", {"cluster_label": cluster_label_to_remove_str})
+            log_manual_adjustment(session.id, user_id, "DELETE_CLUSTER_NO_POINTS", {"cluster_label": cluster_label_to_remove_str, "cluster_name": cluster_to_remove.name})
+
+            session.result_message = f"'{removed_cluster_display_name}' удален. Точек для перераспределения не найдено."
+            flag_modified(session, "result_message")
+
             db.session.commit()
             if sheet_path and os.path.exists(sheet_path):
                 try: os.remove(sheet_path)
@@ -681,7 +691,7 @@ def redistribute_cluster_data(session_id, cluster_label_to_remove_str, user_id):
                     session_reloaded.scatter_data_file_path = new_cache_path
                     flag_modified(session_reloaded, "scatter_data_file_path")
                     db.session.commit()
-            return {"message": f"Кластер {cluster_label_to_remove_str} удален. Точек для перераспределения не найдено."}
+            return {"message": session.result_message}
 
         embeddings_to_move = embeddings[point_indices_to_move]
 
@@ -721,7 +731,12 @@ def redistribute_cluster_data(session_id, cluster_label_to_remove_str, user_id):
         sheet_path = cluster_to_remove.contact_sheet_path
         cluster_to_remove.contact_sheet_path = None
 
-        redistribution_log_details = {"cluster_label_removed": cluster_label_to_remove_str, "points_moved": len(point_indices_to_move), "targets": []}
+        redistribution_log_details = {
+            "cluster_label_removed": cluster_label_to_remove_str,
+            "cluster_name_removed": cluster_to_remove.name,
+            "points_moved": len(point_indices_to_move),
+            "targets": []
+        }
 
         for target_db_id, count in redistribution_counts.items():
             target_cluster = next((c for c in valid_target_clusters if c.id == target_db_id), None)
@@ -731,6 +746,7 @@ def redistribute_cluster_data(session_id, cluster_label_to_remove_str, user_id):
                 flag_modified(target_cluster, "size")
                 redistribution_log_details["targets"].append({
                     "target_cluster_label": target_cluster.cluster_label,
+                    "target_cluster_name": target_cluster.name,
                     "count": count,
                     "new_size": target_cluster.size
                 })
@@ -739,7 +755,7 @@ def redistribute_cluster_data(session_id, cluster_label_to_remove_str, user_id):
 
 
         session.num_clusters = len(valid_target_clusters)
-        session.result_message = f"Кластер {cluster_label_to_remove_str} удален, точки ({len(point_indices_to_move)}) перераспределены."
+        session.result_message = f"'{removed_cluster_display_name}' удален, точки ({len(point_indices_to_move)}) перераспределены."
         flag_modified(session, "num_clusters")
         flag_modified(session, "result_message")
 
@@ -793,7 +809,6 @@ def redistribute_cluster_data(session_id, cluster_label_to_remove_str, user_id):
         db.session.rollback()
         logger.error(f"Ошибка выполнения перераспределения {session_id}/{cluster_label_to_remove_str}: {e}", exc_info=True)
         raise RuntimeError(f"Ошибка перераспределения: {e}") from e
-
 
 def log_manual_adjustment(session_id, user_id, action, details):
     try:
