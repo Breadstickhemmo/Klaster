@@ -22,22 +22,39 @@ const ContactSheetsGrid: React.FC<ContactSheetsGridProps> = ({
     status
 }) => {
 
-    if ((status !== 'SUCCESS' && status !== 'RECLUSTERED') || clusters.length === 0) {
-        if ((status === 'SUCCESS' || status === 'RECLUSTERED') && clusters.length === 0) {
-             return (
-                 <div className="card status-card">
-                     <p>Кластеризация завершена, но не найдено кластеров для отображения контактных отпечатков.</p>
-                 </div>
-             );
+    if ((status !== 'SUCCESS' && status !== 'RECLUSTERED')) {
+        return null;
+    }
+    if (!clusters || clusters.length === 0) {
+        if (status === 'SUCCESS' || status === 'RECLUSTERED') {
+            return (
+                <div className="card status-card">
+                    <p>Кластеризация завершена, но не найдено кластеров для отображения контактных отпечатков.</p>
+                </div>
+            );
         }
         return null;
     }
 
+    const sortedClusters = [...clusters].sort((a, b) => {
+        const numA = parseFloat(String(a.id));
+        const numB = parseFloat(String(b.id));
+
+        if (isNaN(numA) && isNaN(numB)) {
+             return String(a.id).localeCompare(String(b.id));
+        }
+        if (isNaN(numA)) return 1;
+        if (isNaN(numB)) return -1;
+
+        return numA - numB;
+    });
+
+
     return (
         <div className="card contact-sheets-card">
-            <h3>Контактные отпечатки ({clusters.length} шт.)</h3>
+            <h3>Контактные отпечатки ({sortedClusters.length} шт.)</h3>
             <div className="contact-sheets-grid-layout">
-                {clusters.map(cluster => cluster.contactSheetUrl ? (
+                {sortedClusters.map(cluster => cluster.contactSheetUrl ? (
                     <ContactSheet
                         key={cluster.id}
                         clusterId={cluster.id}

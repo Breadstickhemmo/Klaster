@@ -25,6 +25,8 @@ export interface SessionResultResponse {
     num_clusters: number | null;
     processing_time_sec: number | null;
     clusters: ClusterResult[];
+    scatter_data?: ScatterPoint[] | { error: string } | null;
+    scatter_pca_time_sec?: number | null;
     message?: string;
     error?: string;
 }
@@ -38,6 +40,12 @@ export interface SessionListItem {
      num_clusters: number | null;
      result_message: string | null;
      original_filename: string | null;
+}
+
+export interface ScatterPoint {
+    x: number;
+    y: number;
+    cluster: string;
 }
 
 const handleResponse = async (response: Response) => {

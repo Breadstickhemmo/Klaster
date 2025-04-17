@@ -37,6 +37,7 @@ class ClusteringSession(db.Model):
     result_message = db.Column(db.Text, nullable=True)
     num_clusters = db.Column(db.Integer, nullable=True)
     processing_time_sec = db.Column(db.Float, nullable=True)
+    scatter_data_file_path = db.Column(db.String(512), nullable=True)
 
     clusters = db.relationship('ClusterMetadata', backref='session', lazy='dynamic', cascade="all, delete-orphan")
     adjustments = db.relationship('ManualAdjustmentLog', backref='session', lazy='dynamic', cascade="all, delete-orphan")

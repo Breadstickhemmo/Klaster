@@ -2,6 +2,7 @@ import React from 'react';
 import ReactDOM from 'react-dom/client';
 import './index.css';
 import App from './App';
+import zoomPlugin from 'chartjs-plugin-zoom';
 import {
     Chart as ChartJS,
     CategoryScale,
@@ -22,7 +23,8 @@ ChartJS.register(
     LineElement,
     Title,
     Tooltip,
-    Legend
+    Legend,
+    zoomPlugin
 );
 
 

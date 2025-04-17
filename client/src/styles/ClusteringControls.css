@@ -55,6 +55,7 @@
 .file-input::file-selector-button {
     padding: 8px 15px;
     margin: 0;
+    margin-right: 10px;
     border: none;
     border-right: 1px solid #ccc;
     background-color: #6c757d;
@@ -153,7 +154,7 @@
     margin-top: 0.8rem;
     padding-top: 0.5rem;
     border-top: 1px solid #eee;
-    min-height: 1.5em; /* Reserve space */
+    min-height: 1.5em;
 }
 .file-status-info {
     font-size: 0.9rem;
@@ -200,7 +201,7 @@
 
 @media (max-width: 480px) {
     .file-input { font-size: 0.9rem; height: 40px; }
-    .file-input::file-selector-button { padding: 7px 12px; font-size: 0.85rem; height: 100%; }
+    .file-input::file-selector-button { padding: 7px 12px; font-size: 0.85rem; height: 100%; margin-right: 8px; }
     .start-clustering-btn { height: 40px; }
     .param-input { height: 36px; }
 }

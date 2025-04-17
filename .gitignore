@@ -29,6 +29,7 @@ app.log
 contact_sheets/
 migrations/
 uploads/
+scatter_plots_data/
 
 # React
 build/

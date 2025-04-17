@@ -294,6 +294,39 @@ def save_clustering_results(session, labels, centroids, nearest_neighbors_map, i
         created_cluster_metadata.append(cluster_meta)
     return created_cluster_metadata
 
+def get_cluster_labels_for_session(session: ClusteringSession, embeddings: np.ndarray) -> np.ndarray | None:
+    if not session or embeddings is None:
+        return None
+
+    algorithm = session.algorithm
+    params = session.get_params()
+    logger.info(f"Re-calculating labels for session {session.id} using {algorithm} with params {params}")
+
+    try:
+        if algorithm == 'kmeans':
+            n_clusters = int(params.get('n_clusters', 5))
+            if n_clusters <= 0: raise ValueError("n_clusters > 0 required")
+            kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=1)
+            labels = kmeans.fit_predict(embeddings)
+
+        elif algorithm == 'dbscan':
+            eps = float(params.get('eps', 0.5))
+            min_samples = int(params.get('min_samples', 5))
+            if eps <= 0 or min_samples <=0 : raise ValueError("eps and min_samples > 0 required")
+            dbscan = DBSCAN(eps=eps, min_samples=min_samples, n_jobs=-1)
+            labels = dbscan.fit_predict(embeddings)
+
+        else:
+            logger.error(f"Unknown algorithm '{algorithm}' found for session {session.id}")
+            return None
+
+        logger.info(f"Successfully re-calculated labels for session {session.id}")
+        return labels
+
+    except Exception as e:
+        logger.error(f"Error re-calculating labels for session {session.id}: {e}", exc_info=True)
+        return None
+
 def run_clustering_pipeline(user_id, file_path, algorithm, params, original_filename):
     session_id = str(uuid.uuid4())
     logger.info(f"Запуск синхронной кластеризации {session_id} для пользователя {user_id}")
