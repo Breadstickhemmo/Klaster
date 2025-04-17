@@ -2,7 +2,7 @@
     padding: 2rem 2.5rem;
     margin-top: 1.5rem;
     text-align: left;
-    background-color: #ffffff; /* Already in .card, but keep for clarity */
+    background-color: #ffffff;
   }
   
   .welcome-info h3 {

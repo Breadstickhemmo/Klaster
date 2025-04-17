@@ -28,7 +28,6 @@
 .file-upload-wrapper {
     flex-direction: column;
     gap: 0.3rem;
-    /* Increased width to prevent label wrapping */
     flex-basis: 350px;
     min-width: 320px;
 }
@@ -39,43 +38,38 @@
     font-weight: 500;
     margin-bottom: 0.3rem;
     display: block;
-    /* Ensure label stays on one line if possible within the wrapper */
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
 }
 
 .file-input {
-    box-sizing: border-box; /* Keep this */
-    border: 1px solid #ccc; /* Explicitly add border */
-    border-radius: 8px; /* Keep radius */
+    box-sizing: border-box;
+    border: 1px solid #ccc;
+    border-radius: 8px;
     font-size: 0.95rem;
     cursor: pointer;
-    background-color: #fff; /* Keep background */
+    background-color: #fff;
     line-height: 1.5;
     transition: border-color 0.3s ease;
-    display: block; /* Changed to block for better consistency */
+    display: block;
     width: 100%;
     padding: 0;
     height: 42px;
-    /* Removed display: flex from media query for small screens */
-    /* Let button style handle layout */
 }
 
-/* Ensure hover border is visible */
 .file-input:hover {
     border-color: #999;
 }
 
-/* Style the button part */
 .file-input::file-selector-button {
     padding: 8px 15px;
     margin: 0;
-    border: none; /* Button itself has no border */
-    border-right: 1px solid #ccc; /* Separator line */
+    border: none;
+    border-right: 1px solid #ccc;
     background-color: #6c757d;
     color: white;
-    border-radius: 8px 0 0 8px; /* Left side radius matches input */
+    border-radius: 8px 0 0 8px;
     cursor: pointer;
     font-weight: 500;
     font-size: 0.9rem;
@@ -85,23 +79,22 @@
     box-sizing: border-box;
 }
 
-/* Add hover/disabled for button */
 .file-input:hover::file-selector-button {
     background-color: #5a6268;
 }
 .file-input:disabled::file-selector-button {
     background-color: #adb5bd;
     color: #f8f9fa;
-    border-color: #ccc; /* Keep border color */
+    border-color: #ccc;
     cursor: not-allowed;
     opacity: 0.7;
 }
-/* Make sure input is disabled visually */
+
 .file-input:disabled {
     background-color: #e9ecef;
     cursor: not-allowed;
     opacity: 0.7;
-    border-color: #ccc; /* Ensure border color shows disabled */
+    border-color: #ccc; 
 }
 
 .algo-select-group {
@@ -124,7 +117,6 @@
   font-size: 0.95rem;
   cursor: pointer;
   height: 42px;
-  /* Uses global styles */
 }
 
 .algorithm-params {
@@ -245,10 +237,9 @@
         max-width: none;
         margin-top: 0;
         align-self: auto;
-        /* Reset min-width when stacked */
         min-width: auto;
     }
-    /* Ensure label can wrap when stacked */
+
     .file-upload-label {
         white-space: normal;
     }
@@ -268,25 +259,22 @@
 }
 
 @media (max-width: 550px) {
-    /* Adjust file input button style for stacking */
     .file-input::file-selector-button {
-        /* Keep original radius style, don't make full width */
         border-radius: 8px 0 0 8px;
-        width: auto; /* Don't force full width */
-        margin-bottom: 0; /* Remove bottom margin */
-        height: 100%; /* Fill height of input */
-        margin-right: 10px; /* Restore some margin */
+        width: auto; 
+        margin-bottom: 0; 
+        height: 100%; 
+        margin-right: 10px; 
     }
     .file-input {
-        padding-top: 0; /* Remove top padding */
-        height: 42px; /* Restore fixed height */
-        /* Display filename next to button */
+        padding-top: 0; 
+        height: 42px;
         display: flex;
         align-items: center;
     }
 
      .start-clustering-btn {
-        width: 100%; /* Button can be full width */
+        width: 100%;
         height: 42px;
      }
 }
@@ -294,12 +282,12 @@
 @media (max-width: 480px) {
     .file-input {
         font-size: 0.9rem;
-        height: 40px; /* Adjust height */
+        height: 40px; 
     }
     .file-input::file-selector-button {
         padding: 7px 12px;
         font-size: 0.85rem;
-        height: 100%; /* Match new input height */
+        height: 100%;
     }
     .start-clustering-btn {
          height: 40px;

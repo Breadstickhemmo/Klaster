@@ -4,7 +4,7 @@ import '../styles/ContactSheet.css'
 interface ContactSheetProps {
   clusterId: string | number;
   imageUrl: string;
-  clusterSize: number; // Example metric
+  clusterSize: number;
   onDelete: (clusterId: string | number) => void;
   isDeleting: boolean;
 }
