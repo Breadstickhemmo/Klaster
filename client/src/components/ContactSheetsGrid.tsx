@@ -8,7 +8,7 @@ interface ContactSheetsGridProps {
     clusters: ClusterResult[];
     sessionId: string | null;
     onRedistribute: (clusterId: string | number) => void;
-    onRename: (clusterId: string | number, newName: string) => Promise<boolean>; // Добавляем проп
+    onRename: (clusterId: string | number, newName: string) => Promise<boolean>;
     isDeletingId: string | number | null;
     disabled: boolean;
     status: string;
@@ -18,7 +18,7 @@ const ContactSheetsGrid: React.FC<ContactSheetsGridProps> = ({
     clusters,
     sessionId,
     onRedistribute,
-    onRename, // Принимаем новый проп
+    onRename,
     isDeletingId,
     disabled,
     status
@@ -51,23 +51,24 @@ const ContactSheetsGrid: React.FC<ContactSheetsGridProps> = ({
         return numA - numB;
     });
 
-
     return (
         <div className="card contact-sheets-card">
             <h3>Контактные отпечатки ({sortedClusters.length} шт.)</h3>
-            <div className="contact-sheets-grid-layout">
-                {sortedClusters.map(cluster => (
-                    <ContactSheet
-                        key={cluster.id}
-                        clusterId={cluster.id}
-                        imageUrl={cluster.contactSheetUrl}
-                        clusterSize={cluster.size}
-                        initialName={cluster.name} // Передаем начальное имя
-                        onRedistribute={onRedistribute}
-                        onRename={onRename} // Передаем обработчик переименования
-                        isProcessing={isDeletingId === cluster.id || disabled}
-                    />
-                ))}
+            <div className="contact-sheets-scroll-container">
+                <div className="contact-sheets-grid-layout">
+                    {sortedClusters.map(cluster => (
+                        <ContactSheet
+                            key={cluster.id}
+                            clusterId={cluster.id}
+                            imageUrl={cluster.contactSheetUrl}
+                            clusterSize={cluster.size}
+                            initialName={cluster.name}
+                            onRedistribute={onRedistribute}
+                            onRename={onRename}
+                            isProcessing={isDeletingId === cluster.id || disabled}
+                        />
+                    ))}
+                </div>
             </div>
         </div>
     );
