@@ -11,7 +11,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm.attributes import flag_modified
 from werkzeug.utils import secure_filename
 from algorithms import get_cluster_labels_for_session
-from cluster_operations import log_manual_adjustment, redistribute_cluster_data
+from cluster_operations import log_manual_adjustment, redistribute_cluster_data, merge_clusters, split_cluster
 from data_loader import load_embeddings
 from export import (
     generate_assignments_data,
@@ -405,51 +405,98 @@ def adjust_clusters(session_id):
         return jsonify({"error": "Отсутствует тело запроса JSON"}), 400
 
     action = data.get('action')
-    cluster_id = data.get('cluster_id')
-    new_name = data.get('new_name')
 
-    if action == 'RENAME':
-        if cluster_id is None or new_name is None:
-            return jsonify({"error": "Для 'RENAME' необходимы 'cluster_id' и 'new_name'"}), 400
+    try:
+        if action == 'RENAME':
+            cluster_id = data.get('cluster_id')
+            new_name = data.get('new_name')
 
-        cluster_label_str = str(cluster_id)
-        cluster_to_rename = session.clusters.filter_by(cluster_label=cluster_label_str, is_deleted=False).first()
+            if cluster_id is None or new_name is None:
+                return jsonify({"error": "Для 'RENAME' необходимы 'cluster_id' и 'new_name'"}), 400
 
-        if not cluster_to_rename:
-             return jsonify({"error": f"Активный кластер с ID {cluster_label_str} не найден"}), 404
+            cluster_label_str = str(cluster_id)
+            cluster_to_rename = session.clusters.filter_by(cluster_label=cluster_label_str, is_deleted=False).first()
 
-        old_name = cluster_to_rename.name
-        cluster_to_rename.name = new_name.strip() if new_name else None
-        flag_modified(cluster_to_rename, "name")
+            if not cluster_to_rename:
+                 return jsonify({"error": f"Активный кластер с ID {cluster_label_str} не найден"}), 404
 
-        log_details = {
-            "cluster_label": cluster_label_str,
-            "old_name": old_name,
-            "new_name": cluster_to_rename.name
-        }
+            old_name = cluster_to_rename.name
+            cluster_to_rename.name = new_name.strip() if new_name else None
+            flag_modified(cluster_to_rename, "name")
 
-        log_success = log_manual_adjustment(session.id, user_id_int, "RENAME_CLUSTER", log_details)
-        if not log_success:
-             db.session.rollback()
-             return jsonify({"error": "Ошибка логирования действия, переименование отменено"}), 500
+            log_details = { "cluster_label": cluster_label_str, "old_name": old_name, "new_name": cluster_to_rename.name }
+            log_success = log_manual_adjustment(session.id, user_id_int, "RENAME_CLUSTER", log_details)
+            if not log_success:
+                 db.session.rollback()
+                 return jsonify({"error": "Ошибка логирования действия, переименование отменено"}), 500
 
-        try:
-            db.session.commit()
             logger.info(f"Пользователь {current_user_id} переименовал кластер {cluster_label_str} в сессии {session_id} с '{old_name}' на '{cluster_to_rename.name}'")
+            updated_cluster = db.session.get(ClusterMetadata, cluster_to_rename.id)
             return jsonify({
                 "message": "Кластер переименован",
                 "cluster": {
-                    "id": cluster_to_rename.cluster_label,
-                    "name": cluster_to_rename.name,
-                    "size": cluster_to_rename.size
+                    "id": updated_cluster.cluster_label,
+                    "name": updated_cluster.name,
+                    "size": updated_cluster.size
                  }
              }), 200
-        except SQLAlchemyError as e:
-            db.session.rollback()
-            logger.error(f"Ошибка БД при переименовании кластера {session_id}/{cluster_label_str}: {e}", exc_info=True)
-            return jsonify({"error": "Ошибка БД при переименовании кластера"}), 500
-    else:
-         return jsonify({"error": f"Неизвестное действие: {action}"}), 400
+
+        elif action == 'MERGE_CLUSTERS':
+            cluster_ids_to_merge = data.get('cluster_ids_to_merge')
+            if not isinstance(cluster_ids_to_merge, list) or len(cluster_ids_to_merge) < 2:
+                return jsonify({"error": "Для 'MERGE_CLUSTERS' необходим массив 'cluster_ids_to_merge' (минимум 2 элемента)"}), 400
+
+            logger.info(f"Пользователь {current_user_id} запросил MERGE для кластеров {cluster_ids_to_merge} в сессии {session_id}")
+            result = merge_clusters(
+                session_id=session_id,
+                cluster_labels_to_merge=cluster_ids_to_merge,
+                user_id=user_id_int
+            )
+            logger.info(f"Пользователь {current_user_id} завершил MERGE для {session_id}. Результат: {result}")
+            return jsonify(result), 200
+
+        elif action == 'SPLIT_CLUSTER':
+            cluster_id_to_split = data.get('cluster_id_to_split')
+            num_splits = data.get('num_splits', 2)
+
+            if cluster_id_to_split is None:
+                 return jsonify({"error": "Для 'SPLIT_CLUSTER' необходим 'cluster_id_to_split'"}), 400
+            try:
+                 num_splits_int = int(num_splits)
+                 if num_splits_int < 2: raise ValueError()
+            except (ValueError, TypeError):
+                 return jsonify({"error": "'num_splits' должен быть целым числом >= 2"}), 400
+
+            logger.info(f"Пользователь {current_user_id} запросил SPLIT для кластера {cluster_id_to_split} на {num_splits_int} части в сессии {session_id}")
+            result = split_cluster(
+                session_id=session_id,
+                cluster_label_to_split_str=str(cluster_id_to_split),
+                num_splits=num_splits_int,
+                user_id=user_id_int
+            )
+            logger.info(f"Пользователь {current_user_id} завершил SPLIT для {session_id}/{cluster_id_to_split}. Результат: {result}")
+            return jsonify(result), 200
+
+        else:
+             return jsonify({"error": f"Неизвестное действие: {action}"}), 400
+
+    except ValueError as ve:
+         db.session.rollback()
+         logger.warning(f"Ошибка валидации при {action} для {session_id} пользователем {current_user_id}: {ve}", exc_info=False)
+         return jsonify({"error": f"Ошибка операции: {ve}"}), 400
+    except RuntimeError as re:
+         db.session.rollback()
+         logger.error(f"Ошибка выполнения при {action} для {session_id} пользователем {current_user_id}: {re}", exc_info=True)
+         return jsonify({"error": f"Внутренняя ошибка сервера: {re}"}), 500
+    except SQLAlchemyError as e:
+         db.session.rollback()
+         logger.error(f"Ошибка БД при {action} {session_id} пользователем {current_user_id}: {e}", exc_info=True)
+         return jsonify({"error": "Ошибка базы данных при выполнении операции"}), 500
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"Неожиданная ошибка при {action} для {session_id} пользователем {current_user_id}: {e}", exc_info=True)
+        return jsonify({"error": "Неизвестная внутренняя ошибка сервера"}), 500
+
 
 @clustering_bp.route('/export/<session_id>/assignments.csv', methods=['GET'])
 @jwt_required()

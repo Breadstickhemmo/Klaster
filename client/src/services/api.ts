@@ -26,7 +26,7 @@ export interface SessionResultResponse {
     num_clusters: number | null;
     processing_time_sec: number | null;
     clusters: ClusterResult[];
-    scatter_data?: ScatterPoint[] | { error: string } | { message: string } | null;
+    scatter_data?: ScatterPoint[] | { error: string } | { message: string } | null | undefined;
     scatter_pca_time_sec?: number | null;
     message?: string;
     error?: string;
@@ -48,6 +48,29 @@ export interface ScatterPoint {
     y: number;
     cluster: string;
 }
+
+export interface MergeClustersPayload {
+    action: 'MERGE_CLUSTERS';
+    cluster_ids_to_merge: (string | number)[];
+}
+
+export interface SplitClusterPayload {
+    action: 'SPLIT_CLUSTER';
+    cluster_id_to_split: string | number;
+    num_splits?: number;
+}
+
+export interface RenameClusterPayload {
+    action: 'RENAME';
+    cluster_id: string | number;
+    new_name: string;
+}
+
+export interface AdjustResult {
+    message: string;
+    cluster?: { id: string | number; name: string | null; size: number };
+}
+
 
 const handleResponse = async (response: Response) => {
     if (response.status === 204) {
@@ -118,17 +141,35 @@ export const deleteAndRedistributeCluster = async (fetchWithAuth: FetchWithAuth,
     return handleResponse(response);
 };
 
-export const renameCluster = async (fetchWithAuth: FetchWithAuth, sessionId: string, clusterId: string | number, newName: string): Promise<{ message: string; cluster: { id: string | number, name: string | null }}> => {
+export const renameCluster = async (fetchWithAuth: FetchWithAuth, sessionId: string, clusterId: string | number, newName: string): Promise<AdjustResult> => {
+    const payload: RenameClusterPayload = { action: 'RENAME', cluster_id: clusterId, new_name: newName };
     const response = await fetchWithAuth(`/api/clustering/results/${sessionId}/adjust`, {
         method: 'POST',
-        body: JSON.stringify({ action: 'RENAME', cluster_id: clusterId, new_name: newName })
+        body: JSON.stringify(payload)
+    });
+    return handleResponse(response);
+};
+
+export const mergeSelectedClusters = async (fetchWithAuth: FetchWithAuth, sessionId: string, clusterIds: (string | number)[]): Promise<AdjustResult> => {
+    const payload: MergeClustersPayload = { action: 'MERGE_CLUSTERS', cluster_ids_to_merge: clusterIds };
+    const response = await fetchWithAuth(`/api/clustering/results/${sessionId}/adjust`, {
+        method: 'POST',
+        body: JSON.stringify(payload)
+    });
+    return handleResponse(response);
+};
+
+export const splitSelectedCluster = async (fetchWithAuth: FetchWithAuth, sessionId: string, clusterId: string | number, numSplits: number = 2): Promise<AdjustResult> => {
+    const payload: SplitClusterPayload = { action: 'SPLIT_CLUSTER', cluster_id_to_split: clusterId, num_splits: numSplits };
+    const response = await fetchWithAuth(`/api/clustering/results/${sessionId}/adjust`, {
+        method: 'POST',
+        body: JSON.stringify(payload)
     });
     return handleResponse(response);
 };
 
 export const exportAssignmentsCsv = async (fetchWithAuth: FetchWithAuth, sessionId: string): Promise<void> => {
     const response = await fetchWithAuth(`/api/clustering/export/${sessionId}/assignments.csv`);
-    // We don't parse the body on success, just trigger download
     if (!response.ok) {
          const errorData = await response.json().catch(() => ({ error: `HTTP error ${response.status}`}));
          throw new Error(errorData.error || `Failed to export assignments CSV: ${response.status}`);

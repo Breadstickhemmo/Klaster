@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
 import '../styles/ContactSheet.css';
-import { toast } from 'react-toastify';
 
 interface ContactSheetProps {
   clusterId: string | number;
@@ -10,6 +9,9 @@ interface ContactSheetProps {
   onRedistribute: (clusterId: string | number) => void;
   onRename: (clusterId: string | number, newName: string) => Promise<boolean>;
   isProcessing: boolean;
+  isSelected: boolean;
+  onToggleSelection: (clusterId: string | number) => void;
+  onInitiateSplit: (clusterId: string | number) => void;
 }
 
 const ImagePlaceholder: React.FC = () => (
@@ -25,7 +27,10 @@ const ContactSheet: React.FC<ContactSheetProps> = ({
   initialName,
   onRedistribute,
   onRename,
-  isProcessing
+  isProcessing,
+  isSelected,
+  onToggleSelection,
+  onInitiateSplit,
 }) => {
   const [isEditing, setIsEditing] = useState(false);
   const [currentName, setCurrentName] = useState(initialName || '');
@@ -56,13 +61,10 @@ const ContactSheet: React.FC<ContactSheetProps> = ({
     try {
         const success = await onRename(clusterId, currentName.trim());
         if (success) {
-            toast.success(`Кластер ${clusterId} переименован.`);
             setIsEditing(false);
-        } else {
         }
     } catch (error) {
-        console.error("Error saving cluster name:", error);
-        toast.error("Не удалось сохранить имя кластера.");
+         console.error("Error saving cluster name (ContactSheet):", error);
     } finally {
         setIsSavingName(false);
     }
@@ -72,11 +74,26 @@ const ContactSheet: React.FC<ContactSheetProps> = ({
     setCurrentName(event.target.value);
   };
 
+  const handleSelectionChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    onToggleSelection(clusterId);
+  };
+
   const displayClusterName = initialName || `Кластер ${clusterId}`;
-  const areActionsDisabled = isProcessing || isEditing || isSavingName;
+  const commonDisabled = isProcessing || isEditing || isSavingName;
 
   return (
-    <div className={`contact-sheet-card ${isProcessing ? 'is-deleting' : ''} ${isEditing ? 'is-editing-name' : ''}`}>
+    <div className={`contact-sheet-card ${isProcessing ? 'is-deleting' : ''} ${isEditing ? 'is-editing-name' : ''} ${isSelected ? 'selected' : ''}`}>
+
+       <div style={{ position: 'absolute', top: '10px', right: '10px', zIndex: 2 }}>
+           <input
+               type="checkbox"
+               checked={isSelected}
+               onChange={handleSelectionChange}
+               disabled={commonDisabled}
+               title={commonDisabled ? "Действие недоступно" : "Выбрать для слияния"}
+               style={{ cursor: commonDisabled ? 'not-allowed' : 'pointer', transform: 'scale(1.3)' }}
+           />
+       </div>
 
       {isEditing ? (
         <div className="cluster-name-edit">
@@ -101,7 +118,7 @@ const ContactSheet: React.FC<ContactSheetProps> = ({
           alt={`Контактный отпечаток для кластера ${clusterId}`}
           className="contact-sheet-image"
           loading="lazy"
-          onError={(e) => { /* ... обработка ошибки ... */ }}
+          onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
          />
       ) : (
          <ImagePlaceholder />
@@ -132,18 +149,26 @@ const ContactSheet: React.FC<ContactSheetProps> = ({
                 <button
                     className="secondary-btn rename-cluster-btn"
                     onClick={handleRenameClick}
-                    disabled={areActionsDisabled}
-                    title="Переименовать кластер"
+                    disabled={commonDisabled}
+                    title={commonDisabled ? "Действие недоступно" : "Переименовать кластер"}
                 >
                     Переименовать
                 </button>
                 <button
+                     className="secondary-btn split-cluster-btn"
+                     onClick={() => onInitiateSplit(clusterId)}
+                     disabled={commonDisabled || clusterSize < 2}
+                     title={commonDisabled ? "Действие недоступно" : (clusterSize < 2 ? "Кластер слишком мал для разделения" : `Разделить кластер ${clusterId}`)}
+                >
+                    Разделить
+                </button>
+                <button
                     className="secondary-btn delete-sheet-btn"
                     onClick={() => onRedistribute(clusterId)}
-                    disabled={areActionsDisabled}
-                    title={isProcessing ? "Выполняется операция..." : `Удалить кластер ${clusterId} и перераспределить его точки`}
+                    disabled={commonDisabled}
+                    title={commonDisabled ? "Действие недоступно" : `Удалить кластер ${clusterId} и перераспределить его точки`}
                 >
-                    {isProcessing && !isEditing && !isSavingName ? 'Обработка...' : 'Удалить и перераспределить'}
+                    Удалить и перераспределить
                 </button>
              </>
         )}

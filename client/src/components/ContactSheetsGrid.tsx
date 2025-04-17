@@ -12,6 +12,9 @@ interface ContactSheetsGridProps {
     isDeletingId: string | number | null;
     disabled: boolean;
     status: string;
+    selectedIds: Set<string | number>;
+    onToggleSelection: (clusterId: string | number) => void;
+    onInitiateSplit: (clusterId: string | number) => void;
 }
 
 const ContactSheetsGrid: React.FC<ContactSheetsGridProps> = ({
@@ -21,7 +24,10 @@ const ContactSheetsGrid: React.FC<ContactSheetsGridProps> = ({
     onRename,
     isDeletingId,
     disabled,
-    status
+    status,
+    selectedIds,
+    onToggleSelection,
+    onInitiateSplit,
 }) => {
 
     if ((status !== 'SUCCESS' && status !== 'RECLUSTERED')) {
@@ -66,6 +72,9 @@ const ContactSheetsGrid: React.FC<ContactSheetsGridProps> = ({
                             onRedistribute={onRedistribute}
                             onRename={onRename}
                             isProcessing={isDeletingId === cluster.id || disabled}
+                            isSelected={selectedIds.has(cluster.id)}
+                            onToggleSelection={onToggleSelection}
+                            onInitiateSplit={onInitiateSplit}
                         />
                     ))}
                 </div>
